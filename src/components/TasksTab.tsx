@@ -28,7 +28,7 @@ export default function TasksTab({ kids, tasks, onToggle }: Props) {
             key={kid.id}
             className={`flex min-h-0 flex-col rounded-3xl border ${style.border} bg-white shadow-sm p-4`}
           >
-            <header className="mb-3 flex items-center justify-between">
+            <header className="mb-3 flex flex-wrap items-center justify-between gap-x-2 gap-y-2">
               <div className="flex items-center gap-2.5">
                 <Avatar kid={kid} size={44} />
                 <h2 className="text-xl font-bold text-slate-800">{kid.name}</h2>

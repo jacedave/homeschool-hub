@@ -30,8 +30,24 @@ export function PhotoFrame({ photos, time, date, temp, onClose }: PhotoProps) {
   const [index, setIndex] = useState(() => (photos.length ? Math.floor(Math.random() * photos.length) : 0));
   const [failed, setFailed] = useState<Set<string>>(new Set());
 
+  // Photos close to the screen's shape fill it edge to edge (no bars). Others are fitted whole,
+  // so a portrait photo on a landscape screen is never zoomed into.
+  const [shape, setShape] = useState<{ src: string; aspect: number } | null>(null);
+  const [view, setView] = useState(() => (typeof window === "undefined" ? 1.33 : window.innerWidth / window.innerHeight));
+  useEffect(() => {
+    const onResize = () => setView(window.innerWidth / window.innerHeight);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, []);
+
   const usable = photos.filter((p) => !failed.has(p));
   const current = usable.length ? usable[index % usable.length] : undefined;
+
+  const fill = !!shape && shape.src === current && shape.aspect / view >= 0.8 && shape.aspect / view <= 1.3;
 
   // Depending on `index` restarts the timer whenever a photo changes, including manual taps.
   useEffect(() => {
@@ -65,18 +81,28 @@ export function PhotoFrame({ photos, time, date, temp, onClose }: PhotoProps) {
     >
       {current && (
         <>
-          {/* Blurred copy fills the sides; the sharp photo is fitted on top, never cropped. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img key={`bg-${current}`} src={current} alt="" referrerPolicy="no-referrer" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-80 blur-2xl" />
-          <div className="absolute inset-0 bg-black/25" />
+          {/* Cheap blurred backdrop: a tiny copy scaled up, so old iPads can render it. */}
+          <div className="absolute inset-0 overflow-hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              key={`bg-${current}`}
+              src={current}
+              alt=""
+              referrerPolicy="no-referrer"
+              style={{ width: "12.5%", height: "12.5%", transform: "scale(8)", transformOrigin: "top left", WebkitFilter: "blur(3px)", filter: "blur(3px)" }}
+              className="object-cover opacity-90"
+            />
+          </div>
+          <div className="absolute inset-0 bg-black/20" />
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             key={current}
             src={current}
             alt=""
             referrerPolicy="no-referrer"
+            onLoad={(e) => setShape({ src: current, aspect: e.currentTarget.naturalWidth / e.currentTarget.naturalHeight })}
             onError={() => setFailed((f) => new Set(f).add(current))}
-            className="absolute inset-0 h-full w-full object-contain"
+            className={`absolute inset-0 h-full w-full ${fill ? "object-cover" : "object-contain"}`}
           />
         </>
       )}

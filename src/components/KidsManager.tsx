@@ -13,6 +13,7 @@ interface Props {
   onAdd: (k: { name: string; color: string; photo?: string }) => Promise<void>;
   onPhoto: (kid: Kid, photo: string) => Promise<void>;
   onMove: (kid: Kid, dir: -1 | 1) => Promise<void>;
+  onColor: (kid: Kid, color: string) => Promise<void>;
   onRemove: (kid: Kid) => Promise<void>;
   onClose: () => void;
 }
@@ -51,7 +52,7 @@ function PhotoButtons({ onPhoto, compact }: { onPhoto: (dataUrl: string) => void
   );
 }
 
-export default function KidsManager({ kids, contributions, onAdd, onPhoto, onMove, onRemove, onClose }: Props) {
+export default function KidsManager({ kids, contributions, onAdd, onPhoto, onMove, onColor, onRemove, onClose }: Props) {
   const [name, setName] = useState("");
   const [color, setColor] = useState(COLORS[kids.length % COLORS.length]);
   const [photo, setPhoto] = useState<string | undefined>();
@@ -105,6 +106,11 @@ export default function KidsManager({ kids, contributions, onAdd, onPhoto, onMov
                   >
                     <Trash2 className="h-5 w-5" />
                   </button>
+                </div>
+                <div className="mt-2.5 flex gap-2 pl-1">
+                  {COLORS.map((c) => (
+                    <button key={c} type="button" onClick={() => onColor(k, c)} aria-label={`${k.name}: ${c}`} className={`h-8 w-8 rounded-full ${COLOR_MAP[c].solid} ${k.color === c ? "ring-4 ring-indigo-300" : ""}`} />
+                  ))}
                 </div>
                 <div className="mt-2.5 pl-1"><PhotoButtons compact onPhoto={(p) => run(() => onPhoto(k, p))} /></div>
                 {confirmId === k.id && (

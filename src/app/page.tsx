@@ -430,6 +430,16 @@ export default function FamilyWallPlanner() {
     });
   };
 
+  const setKidColor = async (kid: Kid, color: string) => {
+    const prev = kid.color;
+    setKids((p) => p.map((k) => (k.id === kid.id ? { ...k, color } : k)));
+    if (!isLiveMode) return;
+    save(() => hubPost({ action: "update", table: "Kids", recordId: resolveId(kid.id), fields: { Color: color } }), {
+      error: "Couldn't save that color.",
+      revert: () => setKids((p) => p.map((k) => (k.id === kid.id ? { ...k, color: prev } : k))),
+    });
+  };
+
   const moveKid = async (kid: Kid, dir: -1 | 1) => {
     const i = kids.findIndex((k) => k.id === kid.id);
     const j = i + dir;
@@ -618,6 +628,7 @@ export default function FamilyWallPlanner() {
           onAdd={addKid}
           onPhoto={setKidPhoto}
           onMove={moveKid}
+          onColor={setKidColor}
           onRemove={removeKid}
           onClose={() => setShowKids(false)}
         />

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isDueOn, parseRepeat, parseRepeatDays, todayIn, validateDeposit } from "@/lib/rules";
 import { FAMILY_TZ } from "@/lib/config";
+import { COLOR_MAP } from "@/lib/colors";
 import type { Contribution, Kid, RewardItem } from "@/lib/types";
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
@@ -84,6 +85,17 @@ const toKid = (r: AirtableRecord): Kid => ({
   photo: r.fields.Photo ? String(r.fields.Photo) : undefined,
 });
 
+const COLOR_NAMES = Object.keys(COLOR_MAP);
+const COLOR_ALIASES: Record<string, string> = { green: "emerald", teal: "emerald", yellow: "amber", orange: "amber", violet: "purple", indigo: "purple", rose: "pink", magenta: "pink" };
+
+/** Accepts any capitalization or a common alias; blank or unknown colors get a distinct default by position. */
+function pickColor(raw: unknown, index: number): string {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (COLOR_MAP[v]) return v;
+  if (COLOR_ALIASES[v]) return COLOR_ALIASES[v];
+  return COLOR_NAMES[index % COLOR_NAMES.length];
+}
+
 /** Kids in the order set by the optional "Order" number field (falls back to Airtable's order). */
 const sortKids = (rows: AirtableRecord[]) =>
   rows
@@ -166,7 +178,7 @@ export async function GET(req: NextRequest) {
       mode: "live",
       today,
       timeZone: TIME_ZONE,
-      kids: sortKids(kids).map(toKid),
+      kids: sortKids(kids).map((r, i) => ({ ...toKid(r), color: pickColor(r.fields.Color, i) })),
       tasks: tasks.map((r) => {
         const repeat = parseRepeat(r.fields.Repeat);
         const repeatDays = parseRepeatDays(r.fields.RepeatDays);
