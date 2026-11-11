@@ -9,16 +9,23 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "lucide-react": "^1.71.0",
+    "next": "14.2.35",
+    "node-ical": "^0.27.6",
     "react": "^18",
-    "react-dom": "^18",
-    "next": "14.2.35"
+    "react-dom": "^18"
   },
   "devDependencies": {
-    "typescript": "^5",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "eslint": "^8",
-    "eslint-config-next": "14.2.35"
-  }
+    "eslint-config-next": "14.2.35",
+    "typescript": "^5"
+  },
+  "browserslist": [
+    "ios_saf >= 15",
+    "safari >= 15",
+    "defaults"
+  ]
 }
