@@ -49,6 +49,8 @@ export const DEMO_REWARDS: RewardItem[] = [
 export const DEMO_CONTRIBUTIONS: Contribution[] = [
   { id: "c1", rewardId: "r5", kidId: "k1", amount: 6 },
   { id: "c2", rewardId: "r5", kidId: "k3", amount: 4 },
+  { id: "c3", rewardId: "r3", kidId: "k1", amount: 8 },
+  { id: "c4", rewardId: "r3", kidId: "k2", amount: 3 },
 ];
 
 export const DEMO_MEALS: MealItem[] = [

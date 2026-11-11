@@ -56,12 +56,19 @@ export function zonedStartOfDay(timeZone: string, now = new Date()): Date {
   return new Date(guess - (asUtc - guess));
 }
 
-export function poolTotal(rewardId: string, contribs: Contribution[]): number {
-  return contribs.filter((c) => c.rewardId === rewardId).reduce((s, c) => s + c.amount, 0);
+/** Stars saved toward a reward. Pass kidId to count only that kid's savings. */
+export function poolTotal(rewardId: string, contribs: Contribution[], kidId?: string): number {
+  return contribs
+    .filter((c) => c.rewardId === rewardId && (!kidId || c.kidId === kidId))
+    .reduce((s, c) => s + c.amount, 0);
 }
 
-export function remainingCost(reward: RewardItem, contribs: Contribution[]): number {
-  return Math.max(0, reward.cost - poolTotal(reward.id, contribs));
+/**
+ * Stars still needed. Shared rewards have one jar for everyone; solo rewards are unlimited, so each
+ * kid saves toward their own copy (pass that kid's id).
+ */
+export function remainingCost(reward: RewardItem, contribs: Contribution[], kidId?: string): number {
+  return Math.max(0, reward.cost - poolTotal(reward.id, contribs, reward.combinable ? undefined : kidId));
 }
 
 /** Returns an error message if the deposit is not allowed, otherwise null. */
@@ -74,12 +81,8 @@ export function validateDeposit(
   if (!kid || !reward) return "Unknown kid or reward.";
   if (!Number.isInteger(amount) || amount < 1) return "Add at least 1 star.";
   if (amount > kid.stars) return `${kid.name} only has ${kid.stars} stars.`;
-  const remaining = remainingCost(reward, contribs);
+  const remaining = remainingCost(reward, contribs, kid.id);
   if (amount > remaining) return `Only ${remaining} more stars are needed.`;
-  if (!reward.combinable) {
-    const other = contribs.find((c) => c.rewardId === reward.id && c.kidId !== kid.id);
-    if (other) return "This reward can only be earned by one kid at a time.";
-  }
   return null;
 }
 

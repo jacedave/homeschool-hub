@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState } from "react";
-import { X } from "lucide-react";
+import { Users, X } from "lucide-react";
 import type { SleepSettings } from "@/lib/types";
 
-export default function SettingsModal({ value, onSave, onClose }: { value: SleepSettings; onSave: (s: SleepSettings) => void; onClose: () => void }) {
+export default function SettingsModal({ value, onSave, onClose, onManageKids }: { value: SleepSettings; onSave: (s: SleepSettings) => void; onClose: () => void; onManageKids: () => void }) {
   const [s, setS] = useState(value);
   const field = "w-full rounded-xl border border-sky-100 bg-sky-50 px-3.5 py-3 text-slate-800";
   return (
@@ -22,6 +22,9 @@ export default function SettingsModal({ value, onSave, onClose }: { value: Sleep
             <X className="h-5 w-5 text-slate-500" />
           </button>
         </div>
+        <button type="button" onClick={onManageKids} className="flex w-full items-center gap-3 rounded-xl bg-sky-50 px-4 py-3 text-left text-sm font-bold text-slate-700 active:scale-95">
+          <Users className="h-5 w-5 text-indigo-500" /> Family members, photos &amp; order
+        </button>
         <p className="text-sm text-slate-500">The screen goes completely black overnight and wakes itself in the morning. Tap it to wake it for 5 minutes. This setting is saved on this device.</p>
 
         <button

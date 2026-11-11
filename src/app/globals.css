@@ -29,6 +29,24 @@ input, select, textarea {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* Home-screen app: original spacing (no toolbar to dodge). */
+html.standalone .app-shell {
+  height: 100vh;
+  padding-bottom: 0.75rem;
+}
+html.standalone .dock {
+  margin-bottom: 0;
+}
+
+/* Full-screen overlays reach past the home-indicator area so no strip of page shows below. */
+.overlay-full {
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
+}
+
 /* Scroll areas on iPad */
 .scroll-y {
   overflow-y: auto;

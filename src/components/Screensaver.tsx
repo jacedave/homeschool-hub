@@ -5,6 +5,16 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 
 const SLIDE_SECONDS = 12;
 
+/** While a full-screen overlay is up, make the page itself dark so no light strip can show at the screen edge (home-screen app). */
+function useDarkBackdrop() {
+  useEffect(() => {
+    const els = [document.documentElement, document.body];
+    const prev = els.map((el) => el.style.backgroundColor);
+    els.forEach((el) => (el.style.backgroundColor = "#020617"));
+    return () => els.forEach((el, i) => (el.style.backgroundColor = prev[i]));
+  }, []);
+}
+
 interface PhotoProps {
   photos: string[];
   time: string;
@@ -15,6 +25,7 @@ interface PhotoProps {
 
 /** Photo-frame screensaver. Skips photos that fail to load and falls back to a clock. */
 export function PhotoFrame({ photos, time, date, temp, onClose }: PhotoProps) {
+  useDarkBackdrop();
   // Start on a random photo each time the slideshow opens, then play in order.
   const [index, setIndex] = useState(() => (photos.length ? Math.floor(Math.random() * photos.length) : 0));
   const [failed, setFailed] = useState<Set<string>>(new Set());
@@ -50,18 +61,24 @@ export function PhotoFrame({ photos, time, date, temp, onClose }: PhotoProps) {
         e.stopPropagation();
         onClose();
       }}
-      className="fixed inset-0 z-50 flex cursor-pointer items-end justify-between bg-slate-950 p-10"
+      className="overlay-full fixed z-50 flex cursor-pointer items-end justify-between bg-slate-950 p-10"
     >
       {current && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          key={current}
-          src={current}
-          alt=""
-          referrerPolicy="no-referrer"
-          onError={() => setFailed((f) => new Set(f).add(current))}
-          className="absolute inset-0 h-full w-full object-contain"
-        />
+        <>
+          {/* Blurred copy fills the sides; the sharp photo is fitted on top, never cropped. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img key={`bg-${current}`} src={current} alt="" referrerPolicy="no-referrer" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-80 blur-2xl" />
+          <div className="absolute inset-0 bg-black/25" />
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            key={current}
+            src={current}
+            alt=""
+            referrerPolicy="no-referrer"
+            onError={() => setFailed((f) => new Set(f).add(current))}
+            className="absolute inset-0 h-full w-full object-contain"
+          />
+        </>
       )}
       {usable.length > 1 && (
         <>
@@ -85,5 +102,6 @@ export function PhotoFrame({ photos, time, date, temp, onClose }: PhotoProps) {
 
 /** Pure black screen for overnight. Tap to wake for a while. */
 export function SleepScreen({ onWake }: { onWake: () => void }) {
-  return <div onClick={(e) => { e.stopPropagation(); onWake(); }} className="fixed inset-0 z-[80] cursor-pointer bg-black" aria-label="Sleeping. Tap to wake." />;
+  useDarkBackdrop();
+  return <div onClick={(e) => { e.stopPropagation(); onWake(); }} className="overlay-full fixed z-[80] cursor-pointer bg-black" aria-label="Sleeping. Tap to wake." />;
 }

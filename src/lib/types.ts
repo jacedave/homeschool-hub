@@ -9,6 +9,8 @@ export interface Kid {
   name: string;
   stars: number;
   color: string;
+  /** Small profile picture as a data URL. */
+  photo?: string;
 }
 
 export interface TaskItem {

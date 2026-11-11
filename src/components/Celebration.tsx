@@ -54,7 +54,7 @@ export default function Celebration({ data, onClose }: Props) {
   return (
     <div
       onClick={onClose}
-      className="cele-overlay fixed inset-0 z-[60] flex items-center justify-center overflow-hidden bg-gradient-to-br from-indigo-700 via-fuchsia-700 to-amber-500"
+      className="cele-overlay overlay-full fixed z-[60] flex items-center justify-center overflow-hidden bg-gradient-to-br from-indigo-700 via-fuchsia-700 to-amber-500"
     >
       <div className="cele-rays absolute left-1/2 top-1/2 h-[220vmax] w-[220vmax] -ml-[110vmax] -mt-[110vmax]" />
 

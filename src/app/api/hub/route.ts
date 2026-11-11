@@ -81,7 +81,15 @@ const toKid = (r: AirtableRecord): Kid => ({
   name: String(r.fields.Name || "Kid"),
   stars: Number(r.fields.Stars || 0),
   color: String(r.fields.Color || "blue"),
+  photo: r.fields.Photo ? String(r.fields.Photo) : undefined,
 });
+
+/** Kids in the order set by the optional "Order" number field (falls back to Airtable's order). */
+const sortKids = (rows: AirtableRecord[]) =>
+  rows
+    .map((r, i) => ({ r, i, o: r.fields.Order === undefined ? Infinity : Number(r.fields.Order) }))
+    .sort((a, b) => (a.o === b.o ? a.i - b.i : a.o - b.o))
+    .map((x) => x.r);
 
 /** The base has this field spelled "Asignee"; accept either spelling. */
 const assigneeOf = (f: Record<string, unknown>) => String(f.Assignee ?? f.Asignee ?? "");
@@ -158,7 +166,7 @@ export async function GET(req: NextRequest) {
       mode: "live",
       today,
       timeZone: TIME_ZONE,
-      kids: kids.map(toKid),
+      kids: sortKids(kids).map(toKid),
       tasks: tasks.map((r) => {
         const repeat = parseRepeat(r.fields.Repeat);
         const repeatDays = parseRepeatDays(r.fields.RepeatDays);
@@ -225,22 +233,18 @@ interface PostBody {
 const fail = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
 async function completeTask(taskId: string, completed: boolean) {
-  const task = await getRecord("Tasks", taskId);
+  const [task, kidRows] = await Promise.all([getRecord("Tasks", taskId), fetchTable("Kids")]);
   if (Boolean(task.fields.Completed) === completed) return { ok: true, unchanged: true };
 
   const points = Number(task.fields.Points || 1);
   const assignee = assigneeOf(task.fields);
-  const kids = (await fetchTable("Kids")).map(toKid);
-  const kid = kids.find((k) => k.name === assignee);
+  const kid = kidRows.map(toKid).find((k) => k.name === assignee);
 
   const { date } = todayIn(TIME_ZONE);
-  await patchRecord("Tasks", taskId, {
-    Completed: completed,
-    LastCompletedDate: completed ? date : null,
-  });
-  if (kid) {
-    await patchRecord("Kids", kid.id, { Stars: kid.stars + (completed ? points : -points) });
-  }
+  await Promise.all([
+    patchRecord("Tasks", taskId, { Completed: completed, LastCompletedDate: completed ? date : null }),
+    kid ? patchRecord("Kids", kid.id, { Stars: kid.stars + (completed ? points : -points) }) : Promise.resolve(),
+  ]);
   return { ok: true };
 }
 
@@ -255,43 +259,44 @@ async function deposit(rewardId: string, kidId: string, amount: number) {
   const error = validateDeposit(kid, reward, contribs, amount);
   if (error) return { error };
 
-  await patchRecord("Kids", kid.id, { Stars: kid.stars - amount });
-  await createRecord("Contributions", {
-    Reward: rewardId,
-    Kid: kidId,
-    Amount: amount,
-    Claimed: false,
-  });
+  const [, created] = await Promise.all([
+    patchRecord("Kids", kid.id, { Stars: kid.stars - amount }),
+    createRecord("Contributions", { Reward: rewardId, Kid: kidId, Amount: amount, Claimed: false }),
+  ]);
 
-  const total = contribs.filter((c) => c.rewardId === rewardId).reduce((s, c) => s + c.amount, 0) + amount;
-  if (total >= reward.cost) {
-    // Re-read so the row we just created is included, then mark the whole jar as claimed.
-    const jar = (await fetchContributions()).filter((c) => c.rewardId === rewardId);
-    await patchMany(
-      "Contributions",
-      jar.map((c) => ({ id: c.id, fields: { Claimed: true } }))
-    );
+  // Shared rewards claim when the common jar is full; solo rewards claim per kid.
+  const mine = (c: Contribution) => c.rewardId === rewardId && (reward.combinable || c.kidId === kidId);
+  const jar: Contribution[] = [...contribs.filter(mine), { id: created.id, rewardId, kidId, amount }];
+  const total = jar.reduce((s, c) => s + c.amount, 0);
+  if (total < reward.cost) return { ok: true, claimed: false, contributionId: created.id };
 
-    // Log it for the parents' tracker. The Redemptions table is optional, so never fail the claim over it.
+  // Mark the jar claimed and log it for the parents' tracker, in parallel. The Redemptions table is
+  // optional, so never fail the claim over it.
+  const byKid = new Map<string, number>();
+  jar.forEach((c) => byKid.set(c.kidId, (byKid.get(c.kidId) || 0) + c.amount));
+  const logRedemption = async () => {
     try {
       const kidList = (await fetchTable("Kids")).map(toKid);
-      const byKid = new Map<string, number>();
-      jar.forEach((c) => byKid.set(c.kidId, (byKid.get(c.kidId) || 0) + c.amount));
-      const parts = Array.from(byKid, ([id, amt]) => `${kidList.find((k) => k.id === id)?.name || "?"} ${amt}★`);
-      await createRecord("Redemptions", {
+      const nameOf = (id: string) => kidList.find((k) => k.id === id)?.name || "?";
+      const rec = await createRecord("Redemptions", {
         Reward: reward.title,
-        Kids: Array.from(byKid.keys()).map((id) => kidList.find((k) => k.id === id)?.name || "?").join(", "),
-        Details: parts.join(", "),
+        Kids: Array.from(byKid.keys()).map(nameOf).join(", "),
+        Details: Array.from(byKid, ([id, amt]) => `${nameOf(id)} ${amt}★`).join(", "),
         Cost: reward.cost,
         Date: todayIn(TIME_ZONE).date,
         Fulfilled: false,
       });
+      return rec.id;
     } catch (e) {
       console.error("Could not log redemption (is there a Redemptions table?):", e);
+      return undefined;
     }
-    return { ok: true, claimed: true };
-  }
-  return { ok: true, claimed: false };
+  };
+  const [, redemptionId] = await Promise.all([
+    patchMany("Contributions", jar.map((c) => ({ id: c.id, fields: { Claimed: true } }))),
+    logRedemption(),
+  ]);
+  return { ok: true, claimed: true, contributionId: created.id, redemptionId };
 }
 
 async function withdraw(contributionId: string) {

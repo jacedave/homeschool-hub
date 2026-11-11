@@ -2,6 +2,7 @@
 
 import React from "react";
 import { BookOpen, CheckCircle2, Circle, Repeat, Sparkles, Star } from "lucide-react";
+import Avatar from "./Avatar";
 import { kidColor } from "@/lib/colors";
 import type { Kid, TaskItem } from "@/lib/types";
 
@@ -29,9 +30,7 @@ export default function TasksTab({ kids, tasks, onToggle }: Props) {
           >
             <header className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <span className={`flex h-10 w-10 items-center justify-center rounded-full ${style.solid} text-lg font-extrabold text-white`}>
-                  {kid.name.charAt(0)}
-                </span>
+                <Avatar kid={kid} size={44} />
                 <h2 className="text-xl font-bold text-slate-800">{kid.name}</h2>
               </div>
               <div className="flex items-center gap-1.5 rounded-full bg-amber-400/15 px-3 py-1">

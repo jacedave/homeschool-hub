@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { X } from "lucide-react";
+import ImagePicker from "./ImagePicker";
 import { DAY_ABBRS, Kid, RepeatMode, RewardItem, TaskCategory, TaskItem } from "@/lib/types";
 
 const input = "w-full rounded-xl border border-sky-100 bg-sky-50 px-3.5 py-3 text-slate-800";
@@ -24,7 +25,7 @@ function Shell({ title, onClose, children, width = "w-[28rem]" }: { title: strin
 
 export type NewTask = Omit<TaskItem, "id" | "completed" | "dueToday" | "lastCompletedDate">;
 
-export function AddTaskModal({ kids, onSave, onClose }: { kids: Kid[]; onSave: (t: NewTask) => void; onClose: () => void }) {
+export function AddTaskModal({ kids, pin, onSave, onClose }: { kids: Kid[]; pin: string; onSave: (t: NewTask) => void; onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [assignee, setAssignee] = useState(kids[0]?.name || "");
   const [category, setCategory] = useState<TaskCategory>("school");
@@ -110,7 +111,10 @@ export function AddTaskModal({ kids, onSave, onClose }: { kids: Kid[]; onSave: (
           <input type="number" min={1} max={50} value={points} onChange={(e) => setPoints(Number(e.target.value))} className="w-20 bg-transparent text-right text-lg font-bold text-amber-600" />
         </div>
 
-        <input type="url" placeholder="Celebration picture URL (optional)" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} className={input} />
+        <div>
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Celebration picture (optional)</p>
+          <ImagePicker pin={pin} imageUrl={imageUrl} onPickImage={setImageUrl} onClear={() => setImageUrl("")} />
+        </div>
 
         <button type="submit" className="w-full rounded-xl bg-indigo-500 py-3 text-sm font-bold text-white active:scale-95">Save Task</button>
       </form>
@@ -120,7 +124,7 @@ export function AddTaskModal({ kids, onSave, onClose }: { kids: Kid[]; onSave: (
 
 export type NewReward = Omit<RewardItem, "id">;
 
-export function AddRewardModal({ onSave, onClose }: { onSave: (r: NewReward) => void; onClose: () => void }) {
+export function AddRewardModal({ pin, onSave, onClose }: { pin: string; onSave: (r: NewReward) => void; onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [cost, setCost] = useState(20);
   const [icon, setIcon] = useState("🎁");
@@ -138,19 +142,21 @@ export function AddRewardModal({ onSave, onClose }: { onSave: (r: NewReward) => 
         }}
       >
         <input required autoFocus placeholder="Reward (e.g., Trip to the Trampoline Park)" value={title} onChange={(e) => setTitle(e.target.value)} className={input} />
-        <div className="grid grid-cols-[1fr_5rem] gap-2">
-          <div className="flex items-center justify-between rounded-xl border border-sky-100 bg-sky-50 px-3.5 py-2">
-            <span className="text-sm text-slate-600">Cost (stars)</span>
-            <input type="number" min={1} value={cost} onChange={(e) => setCost(Number(e.target.value))} className="w-20 bg-transparent text-right text-lg font-bold text-amber-600" />
-          </div>
-          <input value={icon} onChange={(e) => setIcon(e.target.value)} maxLength={4} className={`${input} text-center text-2xl`} aria-label="Emoji" />
+        <div className="flex items-center justify-between rounded-xl border border-sky-100 bg-sky-50 px-3.5 py-2">
+          <span className="text-sm text-slate-600">Cost (stars)</span>
+          <input type="number" min={1} value={cost} onChange={(e) => setCost(Number(e.target.value))} className="w-20 bg-transparent text-right text-lg font-bold text-amber-600" />
         </div>
-        <input type="url" placeholder="Picture URL for the celebration (optional)" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} className={input} />
+        <div className="flex items-center gap-3">
+          {!imageUrl && <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-3xl">{icon}</span>}
+          <div className="min-w-0 flex-1">
+            <ImagePicker pin={pin} imageUrl={imageUrl} onPickImage={setImageUrl} onPickEmoji={(e) => { setIcon(e); setImageUrl(""); }} onClear={() => setImageUrl("")} />
+          </div>
+        </div>
 
         <div className="grid grid-cols-2 gap-2">
           {[
-            { v: true, label: "Shared", hint: "Kids can pool stars" },
-            { v: false, label: "Solo", hint: "One kid at a time" },
+            { v: true, label: "Shared", hint: "Kids pool stars into one jar" },
+            { v: false, label: "Solo", hint: "Each kid earns their own" },
           ].map((o) => (
             <button
               type="button"

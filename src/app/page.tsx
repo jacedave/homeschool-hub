@@ -19,6 +19,7 @@ import TasksTab from "@/components/TasksTab";
 import RewardsTab from "@/components/RewardsTab";
 import { PhotoFrame, SleepScreen } from "@/components/Screensaver";
 import SettingsModal from "@/components/SettingsModal";
+import KidsManager from "@/components/KidsManager";
 import { CalendarTab, MealsTab, ShoppingTab } from "@/components/OtherTabs";
 import { AddRewardModal, AddTaskModal, NewReward, NewTask, PinModal } from "@/components/Modals";
 import { DEMO_CONTRIBUTIONS, DEMO_KIDS, DEMO_MEALS, DEMO_REWARDS, DEMO_SHOPPING, DEMO_TASKS } from "@/lib/demoData";
@@ -60,6 +61,7 @@ export default function FamilyWallPlanner() {
   const [showAddTask, setShowAddTask] = useState(false);
   const [showAddReward, setShowAddReward] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showKids, setShowKids] = useState(false);
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
   const [timeZone, setTimeZone] = useState("");
   const [sleep, setSleep] = useState<SleepSettings>({ enabled: false, sleepAt: "21:00", wakeAt: "06:30" });
@@ -91,6 +93,13 @@ export default function FamilyWallPlanner() {
   const pinRef = useRef("");
   pinRef.current = pin;
 
+  // Optimistic-update bookkeeping: screens change instantly, saves run in order in the background.
+  const seqRef = useRef(0); // bumps on every local change
+  const pendingRef = useRef(0); // saves still in flight
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const idMapRef = useRef<Record<string, string>>({}); // temporary id -> real Airtable id
+  const resolveId = (id: string) => idMapRef.current[id] ?? id;
+
   const showNotice = useCallback((msg: string) => {
     setNotice(msg);
     setTimeout(() => setNotice(""), 4000);
@@ -105,10 +114,11 @@ export default function FamilyWallPlanner() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Something went wrong.");
-    return data as { claimed?: boolean };
+    return data as { id?: string; claimed?: boolean; contributionId?: string; redemptionId?: string };
   }, []);
 
   const fetchAllData = useCallback(async (activePin: string) => {
+    const startSeq = seqRef.current;
     try {
       const headers = { "x-family-pin": activePin };
       const [hubRes, extRes] = await Promise.all([fetch("/api/hub", { headers }), fetch("/api/external", { headers })]);
@@ -116,14 +126,17 @@ export default function FamilyWallPlanner() {
       if (hubRes.ok) {
         const hub = await hubRes.json();
         setIsLiveMode(true);
-        if (hub.kids?.length) setKids(hub.kids);
-        if (hub.tasks) setTasks(hub.tasks);
-        if (hub.rewards) setRewards(hub.rewards);
-        if (hub.contributions) setContributions(hub.contributions);
-        if (hub.meals?.length) setMeals(hub.meals);
-        if (hub.shopping) setShopping(hub.shopping);
-        if (hub.redemptions) setRedemptions(hub.redemptions);
         if (hub.timeZone) setTimeZone(hub.timeZone);
+        // Don't let a sync that started before (or during) a local change overwrite it with stale data.
+        if (seqRef.current === startSeq && pendingRef.current === 0) {
+          if (hub.kids?.length) setKids(hub.kids);
+          if (hub.tasks) setTasks(hub.tasks);
+          if (hub.rewards) setRewards(hub.rewards);
+          if (hub.contributions) setContributions(hub.contributions);
+          if (hub.meals?.length) setMeals(hub.meals);
+          if (hub.shopping) setShopping(hub.shopping);
+          if (hub.redemptions) setRedemptions(hub.redemptions);
+        }
       } else {
         setIsLiveMode(false);
       }
@@ -137,6 +150,14 @@ export default function FamilyWallPlanner() {
     } catch (err) {
       console.error("Sync error:", err);
     }
+  }, []);
+
+  // Opened from the iPad home screen? Then there is no browser toolbar, so drop the extra bottom spacing.
+  useEffect(() => {
+    const standalone =
+      (window.navigator as Navigator & { standalone?: boolean }).standalone === true ||
+      window.matchMedia("(display-mode: standalone)").matches;
+    document.documentElement.classList.toggle("standalone", standalone);
   }, []);
 
   useEffect(() => {
@@ -199,196 +220,279 @@ export default function FamilyWallPlanner() {
     setCelebration(data);
   };
 
+  /**
+   * Queues a background save. Saves run one at a time, in the order tapped, so quick taps can't
+   * overwrite each other. If one fails, `revert` undoes just that change and an error is shown.
+   */
+  const save = <T,>(remote: () => Promise<T>, opts: { revert: () => void; error: string; onDone?: (r: T) => void }) => {
+    seqRef.current++;
+    pendingRef.current++;
+    queueRef.current = queueRef.current.then(async () => {
+      try {
+        opts.onDone?.(await remote());
+      } catch (e) {
+        opts.revert();
+        showNotice(e instanceof Error && e.message ? e.message : opts.error);
+      } finally {
+        pendingRef.current--;
+        if (pendingRef.current === 0) fetchAllData(pinRef.current); // quietly swap temporary ids for real ones
+      }
+    });
+  };
+
   /* ---------------- Tasks ---------------- */
 
-  const toggleTask = async (task: TaskItem) => {
+  const toggleTask = (task: TaskItem) => {
     const completed = !task.completed;
     const delta = completed ? task.points : -task.points;
     const date = today || localDate();
+    const prevDate = task.lastCompletedDate;
 
-    const prevTasks = tasks;
-    const prevKids = kids;
     setTasks((p) => p.map((t) => (t.id === task.id ? { ...t, completed, lastCompletedDate: completed ? date : undefined } : t)));
     setKids((p) => p.map((k) => (k.name === task.assignee ? { ...k, stars: k.stars + delta } : k)));
 
     if (completed) {
-      celebrate({
-        name: task.assignee,
-        headline: "Awesome job!",
-        title: task.title,
-        points: task.points,
-        icon: "⭐",
-        imageUrl: task.imageUrl,
-      });
+      celebrate({ name: task.assignee, headline: "Awesome job!", title: task.title, points: task.points, icon: "⭐", imageUrl: task.imageUrl });
     }
+    if (!isLiveMode) return;
 
-    if (isLiveMode) {
-      try {
-        await hubPost({ action: "completeTask", taskId: task.id, completed });
-        fetchAllData(pinRef.current);
-      } catch (e) {
-        setTasks(prevTasks);
-        setKids(prevKids);
-        showNotice(e instanceof Error ? e.message : "Couldn't save that change.");
-      }
-    }
+    save(() => hubPost({ action: "completeTask", taskId: resolveId(task.id), completed }), {
+      error: "Couldn't save that change.",
+      revert: () => {
+        setTasks((p) => p.map((t) => (t.id === task.id ? { ...t, completed: !completed, lastCompletedDate: prevDate } : t)));
+        setKids((p) => p.map((k) => (k.name === task.assignee ? { ...k, stars: k.stars - delta } : k)));
+        if (completed) setCelebration(null);
+      },
+    });
   };
 
-  const handleAddTask = async (t: NewTask) => {
+  const handleAddTask = (t: NewTask) => {
     setShowAddTask(false);
-    if (!isLiveMode) {
-      setTasks((p) => [...p, { ...t, id: "demo-" + Date.now(), completed: false, dueToday: true }]);
-      return;
-    }
-    try {
-      await hubPost({
-        action: "create",
-        table: "Tasks",
-        fields: {
-          Title: t.title,
-          Assignee: t.assignee,
-          Category: t.category,
-          Points: t.points,
-          Completed: false,
-          Repeat: t.repeat.charAt(0).toUpperCase() + t.repeat.slice(1),
-          RepeatDays: t.repeatDays.join(","),
-          ...(t.imageUrl ? { ImageUrl: t.imageUrl } : {}),
-        },
-      });
-      fetchAllData(pinRef.current);
-    } catch (e) {
-      showNotice(e instanceof Error ? e.message : "Couldn't add the task.");
-    }
+    const tempId = (isLiveMode ? "tmp-" : "demo-") + Date.now();
+    setTasks((p) => [...p, { ...t, id: tempId, completed: false, dueToday: true }]);
+    if (!isLiveMode) return;
+
+    save(
+      () =>
+        hubPost({
+          action: "create",
+          table: "Tasks",
+          fields: {
+            Title: t.title,
+            Assignee: t.assignee,
+            Category: t.category,
+            Points: t.points,
+            Completed: false,
+            Repeat: t.repeat.charAt(0).toUpperCase() + t.repeat.slice(1),
+            RepeatDays: t.repeatDays.join(","),
+            ...(t.imageUrl ? { ImageUrl: t.imageUrl } : {}),
+          },
+        }),
+      {
+        error: "Couldn't add the task.",
+        onDone: (r) => r.id && (idMapRef.current[tempId] = r.id),
+        revert: () => setTasks((p) => p.filter((x) => x.id !== tempId)),
+      }
+    );
   };
 
   /* ---------------- Rewards ---------------- */
 
-  const handleAddReward = async (r: NewReward) => {
+  const handleAddReward = (r: NewReward) => {
     setShowAddReward(false);
-    if (!isLiveMode) {
-      setRewards((p) => [...p, { ...r, id: "demo-r" + Date.now() }]);
-      return;
-    }
-    try {
-      await hubPost({
-        action: "create",
-        table: "Rewards",
-        fields: { Title: r.title, Cost: r.cost, Icon: r.icon, Combinable: r.combinable, ...(r.imageUrl ? { ImageUrl: r.imageUrl } : {}) },
-      });
-      fetchAllData(pinRef.current);
-    } catch (e) {
-      showNotice(e instanceof Error ? e.message : "Couldn't add the reward.");
-    }
+    const tempId = (isLiveMode ? "tmp-r" : "demo-r") + Date.now();
+    setRewards((p) => [...p, { ...r, id: tempId }]);
+    if (!isLiveMode) return;
+
+    save(
+      () =>
+        hubPost({
+          action: "create",
+          table: "Rewards",
+          fields: { Title: r.title, Cost: r.cost, Icon: r.icon, Combinable: r.combinable, ...(r.imageUrl ? { ImageUrl: r.imageUrl } : {}) },
+        }),
+      {
+        error: "Couldn't add the reward.",
+        onDone: (res) => res.id && (idMapRef.current[tempId] = res.id),
+        revert: () => setRewards((p) => p.filter((x) => x.id !== tempId)),
+      }
+    );
   };
 
-  const deposit = async (kid: Kid, reward: RewardItem, amount: number) => {
+  const deposit = (kid: Kid, reward: RewardItem, amount: number) => {
     const error = validateDeposit(kid, reward, contributions, amount);
     if (error) return showNotice(error);
 
-    const fills = amount >= remainingCost(reward, contributions);
-    const contributorIds = new Set(contributions.filter((c) => c.rewardId === reward.id).map((c) => c.kidId));
-    contributorIds.add(kid.id);
-    const names = kids.filter((k) => contributorIds.has(k.id)).map((k) => k.name);
+    const fills = amount >= remainingCost(reward, contributions, kid.id);
+    // Solo rewards are claimed per kid; shared rewards claim everyone's contributions together.
+    const inJar = (c: { rewardId: string; kidId: string }) => c.rewardId === reward.id && (reward.combinable || c.kidId === kid.id);
+    const jarBefore = contributions.filter(inJar);
+    const names = kids.filter((k) => k.id === kid.id || jarBefore.some((c) => c.kidId === k.id)).map((k) => k.name);
     const party = new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(names);
+    const prefix = isLiveMode ? "tmp-" : "demo-";
+    const contribId = `${prefix}c${Date.now()}`;
+    const redId = `${prefix}red${Date.now()}`;
 
-    const claimedData: CelebrationData = {
-      name: party,
-      headline: "Reward unlocked!",
-      title: reward.title,
-      icon: reward.icon,
-      imageUrl: reward.imageUrl,
-    };
-
-    if (!isLiveMode) {
-      setKids((p) => p.map((k) => (k.id === kid.id ? { ...k, stars: k.stars - amount } : k)));
-      setContributions((p) =>
-        fills
-          ? p.filter((c) => c.rewardId !== reward.id)
-          : [...p, { id: "demo-c" + Date.now(), rewardId: reward.id, kidId: kid.id, amount }]
-      );
-      if (fills) {
-        const jar = [...contributions.filter((c) => c.rewardId === reward.id), { kidId: kid.id, amount }];
-        setRedemptions((p) => [
-          {
-            id: "demo-red" + Date.now(),
-            reward: reward.title,
-            kids: names.join(", "),
-            details: jar.map((c) => `${kids.find((k) => k.id === c.kidId)?.name} ${c.amount}★`).join(", "),
-            cost: reward.cost,
-            date: today || localDate(),
-            fulfilled: false,
-          },
-          ...p,
-        ]);
-        celebrate(claimedData);
-      } else showNotice(`${kid.name} added ${amount}★ to ${reward.title}.`);
-      return;
+    // 1. Update the screen right away.
+    setKids((p) => p.map((k) => (k.id === kid.id ? { ...k, stars: k.stars - amount } : k)));
+    if (fills) {
+      const jar = [...jarBefore, { kidId: kid.id, amount }];
+      setContributions((p) => p.filter((c) => !inJar(c)));
+      setRedemptions((p) => [
+        {
+          id: redId,
+          reward: reward.title,
+          kids: names.join(", "),
+          details: jar.map((c) => `${kids.find((k) => k.id === c.kidId)?.name} ${c.amount}★`).join(", "),
+          cost: reward.cost,
+          date: today || localDate(),
+          fulfilled: false,
+        },
+        ...p,
+      ]);
+      celebrate({ name: party, headline: "Reward unlocked!", title: reward.title, icon: reward.icon, imageUrl: reward.imageUrl });
+    } else {
+      setContributions((p) => [...p, { id: contribId, rewardId: reward.id, kidId: kid.id, amount }]);
+      showNotice(`${kid.name} added ${amount}★ to ${reward.title}.`);
     }
+    if (!isLiveMode) return;
 
-    try {
-      const result = await hubPost({ action: "deposit", rewardId: reward.id, kidId: kid.id, amount });
-      if (result.claimed) celebrate(claimedData);
-      else showNotice(`${kid.name} added ${amount}★ to ${reward.title}.`);
-    } catch (e) {
-      showNotice(e instanceof Error ? e.message : "Couldn't add those stars.");
-    }
-    fetchAllData(pinRef.current);
+    // 2. Save in the background; undo this one change if it fails.
+    save(() => hubPost({ action: "deposit", rewardId: resolveId(reward.id), kidId: resolveId(kid.id), amount }), {
+      error: "Couldn't add those stars.",
+      onDone: (r) => {
+        if (r.contributionId) idMapRef.current[contribId] = r.contributionId;
+        if (r.redemptionId) idMapRef.current[redId] = r.redemptionId;
+      },
+      revert: () => {
+        setKids((p) => p.map((k) => (k.id === kid.id ? { ...k, stars: k.stars + amount } : k)));
+        if (fills) {
+          setContributions((p) => [...p, ...jarBefore]);
+          setRedemptions((p) => p.filter((x) => x.id !== redId));
+          setCelebration(null);
+        } else {
+          setContributions((p) => p.filter((c) => c.id !== contribId));
+        }
+      },
+    });
   };
 
-  const fulfill = async (r: Redemption) => {
+  const fulfill = (r: Redemption) => {
     setRedemptions((p) => p.map((x) => (x.id === r.id ? { ...x, fulfilled: true } : x)));
     if (!isLiveMode) return;
-    try {
-      await hubPost({ action: "update", table: "Redemptions", recordId: r.id, fields: { Fulfilled: true } });
-    } catch (e) {
-      setRedemptions((p) => p.map((x) => (x.id === r.id ? { ...x, fulfilled: false } : x)));
-      showNotice(e instanceof Error ? e.message : "Couldn't save that change.");
-    }
+    save(() => hubPost({ action: "update", table: "Redemptions", recordId: resolveId(r.id), fields: { Fulfilled: true } }), {
+      error: "Couldn't save that change.",
+      revert: () => setRedemptions((p) => p.map((x) => (x.id === r.id ? { ...x, fulfilled: false } : x))),
+    });
   };
 
-  const withdraw = async (c: Contribution) => {
-    if (!isLiveMode) {
-      setContributions((p) => p.filter((x) => x.id !== c.id));
-      setKids((p) => p.map((k) => (k.id === c.kidId ? { ...k, stars: k.stars + c.amount } : k)));
-      return;
-    }
-    try {
-      await hubPost({ action: "withdraw", contributionId: c.id });
-    } catch (e) {
-      showNotice(e instanceof Error ? e.message : "Couldn't take those stars back.");
-    }
-    fetchAllData(pinRef.current);
+  const withdraw = (c: Contribution) => {
+    setContributions((p) => p.filter((x) => x.id !== c.id));
+    setKids((p) => p.map((k) => (k.id === c.kidId ? { ...k, stars: k.stars + c.amount } : k)));
+    if (!isLiveMode) return;
+    save(() => hubPost({ action: "withdraw", contributionId: resolveId(c.id) }), {
+      error: "Couldn't take those stars back.",
+      revert: () => {
+        setContributions((p) => [...p, c]);
+        setKids((p) => p.map((k) => (k.id === c.kidId ? { ...k, stars: k.stars - c.amount } : k)));
+      },
+    });
+  };
+
+  /* ---------------- Family members ---------------- */
+
+  const addKid = async (k: { name: string; color: string; photo?: string }) => {
+    const tempId = (isLiveMode ? "tmp-k" : "demo-k") + Date.now();
+    setKids((p) => [...p, { id: tempId, name: k.name, color: k.color, photo: k.photo, stars: 0 }]);
+    if (!isLiveMode) return;
+    save(
+      () =>
+        hubPost({
+          action: "create",
+          table: "Kids",
+          fields: { Name: k.name, Color: k.color, Stars: 0, Order: kids.length + 1, ...(k.photo ? { Photo: k.photo } : {}) },
+        }),
+      {
+        error: "Couldn't add that person.",
+        onDone: (r) => r.id && (idMapRef.current[tempId] = r.id),
+        revert: () => setKids((p) => p.filter((x) => x.id !== tempId)),
+      }
+    );
+  };
+
+  const setKidPhoto = async (kid: Kid, photo: string) => {
+    const prev = kid.photo;
+    setKids((p) => p.map((k) => (k.id === kid.id ? { ...k, photo } : k)));
+    if (!isLiveMode) return;
+    save(() => hubPost({ action: "update", table: "Kids", recordId: resolveId(kid.id), fields: { Photo: photo } }), {
+      error: "Couldn't save that photo.",
+      revert: () => setKids((p) => p.map((k) => (k.id === kid.id ? { ...k, photo: prev } : k))),
+    });
+  };
+
+  const moveKid = async (kid: Kid, dir: -1 | 1) => {
+    const i = kids.findIndex((k) => k.id === kid.id);
+    const j = i + dir;
+    if (j < 0 || j >= kids.length) return;
+    const swap = (list: Kid[], a: string, b: string) => {
+      const next = [...list];
+      const x = next.findIndex((k) => k.id === a);
+      const y = next.findIndex((k) => k.id === b);
+      if (x < 0 || y < 0) return list;
+      [next[x], next[y]] = [next[y], next[x]];
+      return next;
+    };
+    const otherId = kids[j].id;
+    const nextOrder = swap(kids, kid.id, otherId);
+    setKids(nextOrder);
+    if (!isLiveMode) return;
+    // Write the full order so every kid has an Order value.
+    save(() => Promise.all(nextOrder.map((k, n) => hubPost({ action: "update", table: "Kids", recordId: resolveId(k.id), fields: { Order: n + 1 } }))), {
+      error: "Couldn't save the new order.",
+      revert: () => setKids((p) => swap(p, kid.id, otherId)),
+    });
+  };
+
+  const removeKid = async (kid: Kid) => {
+    const index = kids.findIndex((k) => k.id === kid.id);
+    setKids((p) => p.filter((k) => k.id !== kid.id));
+    if (!isLiveMode) return;
+    save(() => hubPost({ action: "delete", table: "Kids", recordId: resolveId(kid.id) }), {
+      error: "Couldn't remove that person.",
+      revert: () =>
+        setKids((p) => {
+          const next = [...p];
+          next.splice(Math.min(index, next.length), 0, kid);
+          return next;
+        }),
+    });
   };
 
   /* ---------------- Shopping ---------------- */
 
-  const handleAddShopping = async (e: React.FormEvent) => {
+  const handleAddShopping = (e: React.FormEvent) => {
     e.preventDefault();
     const item = newShoppingItem.trim();
     if (!item) return;
     setNewShoppingItem("");
-    if (!isLiveMode) {
-      setShopping((p) => [{ id: "s-" + Date.now(), item, category: "Grocery", checked: false }, ...p]);
-      return;
-    }
-    try {
-      await hubPost({ action: "create", table: "Shopping", fields: { Item: item, Category: "Grocery", Checked: false } });
-      fetchAllData(pinRef.current);
-    } catch (err) {
-      showNotice(err instanceof Error ? err.message : "Couldn't add the item.");
-    }
+    const tempId = (isLiveMode ? "tmp-s" : "s-") + Date.now();
+    setShopping((p) => [{ id: tempId, item, category: "Grocery", checked: false }, ...p]);
+    if (!isLiveMode) return;
+    save(() => hubPost({ action: "create", table: "Shopping", fields: { Item: item, Category: "Grocery", Checked: false } }), {
+      error: "Couldn't add the item.",
+      onDone: (r) => r.id && (idMapRef.current[tempId] = r.id),
+      revert: () => setShopping((p) => p.filter((x) => x.id !== tempId)),
+    });
   };
 
-  const toggleShoppingItem = async (item: ShoppingItem) => {
+  const toggleShoppingItem = (item: ShoppingItem) => {
     const checked = !item.checked;
     setShopping((p) => p.map((s) => (s.id === item.id ? { ...s, checked } : s)));
     if (!isLiveMode) return;
-    try {
-      await hubPost({ action: "update", table: "Shopping", recordId: item.id, fields: { Checked: checked } });
-    } catch (e) {
-      setShopping((p) => p.map((s) => (s.id === item.id ? { ...s, checked: !checked } : s)));
-      showNotice(e instanceof Error ? e.message : "Couldn't save that change.");
-    }
+    save(() => hubPost({ action: "update", table: "Shopping", recordId: resolveId(item.id), fields: { Checked: checked } }), {
+      error: "Couldn't save that change.",
+      revert: () => setShopping((p) => p.map((s) => (s.id === item.id ? { ...s, checked: !checked } : s))),
+    });
   };
 
   const todaysMeal = meals.find((m) => m.day.toLowerCase() === todayName.toLowerCase()) || meals[0];
@@ -481,7 +585,7 @@ export default function FamilyWallPlanner() {
       </main>
 
       {/* Bottom dock */}
-      <footer className="mb-8 mt-3 flex shrink-0 items-center justify-between rounded-2xl bg-white shadow-sm px-3 py-2">
+      <footer className="dock mb-8 mt-3 flex shrink-0 items-center justify-between rounded-2xl bg-white shadow-sm px-3 py-2">
         <nav className="flex items-center gap-1.5">
           {NAV_TABS.map((tab) => {
             const Icon = tab.icon;
@@ -505,11 +609,26 @@ export default function FamilyWallPlanner() {
         </button>
       </footer>
 
-      {showAddTask && <AddTaskModal kids={kids} onSave={handleAddTask} onClose={() => setShowAddTask(false)} />}
-      {showAddReward && <AddRewardModal onSave={handleAddReward} onClose={() => setShowAddReward(false)} />}
+      {showAddTask && <AddTaskModal kids={kids} pin={pin} onSave={handleAddTask} onClose={() => setShowAddTask(false)} />}
+      {showAddReward && <AddRewardModal pin={pin} onSave={handleAddReward} onClose={() => setShowAddReward(false)} />}
+      {showKids && (
+        <KidsManager
+          kids={kids}
+          contributions={contributions}
+          onAdd={addKid}
+          onPhoto={setKidPhoto}
+          onMove={moveKid}
+          onRemove={removeKid}
+          onClose={() => setShowKids(false)}
+        />
+      )}
       {showSettings && (
         <SettingsModal
           value={sleep}
+          onManageKids={() => {
+            setShowSettings(false);
+            setShowKids(true);
+          }}
           onClose={() => setShowSettings(false)}
           onSave={(v) => {
             setSleep(v);
