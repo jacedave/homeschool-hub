@@ -4,12 +4,17 @@ const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 const BASE_ID = process.env.AIRTABLE_BASE_ID;
 const FAMILY_PIN = process.env.FAMILY_PIN || "1234";
 
+interface AirtableRecord {
+  id: string;
+  fields: Record<string, unknown>;
+}
+
 function isAuthorized(req: NextRequest) {
   const pin = req.headers.get("x-family-pin");
   return pin === FAMILY_PIN && !!AIRTABLE_TOKEN && !!BASE_ID;
 }
 
-async function fetchTable(tableName: string) {
+async function fetchTable(tableName: string): Promise<AirtableRecord[]> {
   const res = await fetch(
     `https://api.airtable.com/v0/${BASE_ID}/${encodeURIComponent(tableName)}`,
     {
@@ -18,7 +23,7 @@ async function fetchTable(tableName: string) {
     }
   );
   if (!res.ok) throw new Error(`Failed to fetch ${tableName}`);
-  const data = await res.json();
+  const data = (await res.json()) as { records: AirtableRecord[] };
   return data.records;
 }
 
@@ -38,42 +43,43 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       mode: "live",
-      kids: kids.map((r: any) => ({
+      kids: kids.map((r) => ({
         id: r.id,
-        name: r.fields.Name || "Kid",
-        stars: r.fields.Stars || 0,
-        color: r.fields.Color || "blue",
+        name: String(r.fields.Name || "Kid"),
+        stars: Number(r.fields.Stars || 0),
+        color: String(r.fields.Color || "blue"),
       })),
-      tasks: tasks.map((r: any) => ({
+      tasks: tasks.map((r) => ({
         id: r.id,
-        title: r.fields.Title || "",
-        assignee: r.fields.Assignee || "",
-        category: r.fields.Category || "chore",
-        points: r.fields.Points || 1,
-        completed: !!r.fields.Completed,
+        title: String(r.fields.Title || ""),
+        assignee: String(r.fields.Assignee || ""),
+        category: r.fields.Category === "school" ? "school" : "chore",
+        points: Number(r.fields.Points || 1),
+        completed: Boolean(r.fields.Completed),
       })),
-      rewards: rewards.map((r: any) => ({
+      rewards: rewards.map((r) => ({
         id: r.id,
-        title: r.fields.Title || "",
-        cost: r.fields.Cost || 10,
-        icon: r.fields.Icon || "🏆",
+        title: String(r.fields.Title || ""),
+        cost: Number(r.fields.Cost || 10),
+        icon: String(r.fields.Icon || "🏆"),
       })),
-      meals: meals.map((r: any) => ({
+      meals: meals.map((r) => ({
         id: r.id,
-        day: r.fields.Day || "",
-        breakfast: r.fields.Breakfast || "",
-        lunch: r.fields.Lunch || "",
-        dinner: r.fields.Dinner || "",
+        day: String(r.fields.Day || ""),
+        breakfast: String(r.fields.Breakfast || ""),
+        lunch: String(r.fields.Lunch || ""),
+        dinner: String(r.fields.Dinner || ""),
       })),
-      shopping: shopping.map((r: any) => ({
+      shopping: shopping.map((r) => ({
         id: r.id,
-        item: r.fields.Item || "",
-        category: r.fields.Category || "General",
-        checked: !!r.fields.Checked,
+        item: String(r.fields.Item || ""),
+        category: String(r.fields.Category || "General"),
+        checked: Boolean(r.fields.Checked),
       })),
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -82,18 +88,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await req.json();
+  const body = (await req.json()) as {
+    action: string;
+    table: string;
+    recordId?: string;
+    fields?: Record<string, unknown>;
+  };
   const { action, table, recordId, fields } = body;
 
   try {
     let url = `https://api.airtable.com/v0/${BASE_ID}/${encodeURIComponent(table)}`;
     let method = "POST";
-    let payload: any = { fields };
+    let payload: { fields?: Record<string, unknown> } | undefined = { fields };
 
-    if (action === "update") {
+    if (action === "update" && recordId) {
       url = `${url}/${recordId}`;
       method = "PATCH";
-    } else if (action === "delete") {
+    } else if (action === "delete" && recordId) {
       url = `${url}/${recordId}`;
       method = "DELETE";
       payload = undefined;
@@ -108,9 +119,10 @@ export async function POST(req: NextRequest) {
       body: payload ? JSON.stringify(payload) : undefined,
     });
 
-    const data = await res.json();
+    const data: unknown = await res.json();
     return NextResponse.json(data);
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

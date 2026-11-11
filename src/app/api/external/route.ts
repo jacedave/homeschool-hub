@@ -3,14 +3,22 @@ import * as ical from "node-ical";
 
 const FAMILY_PIN = process.env.FAMILY_PIN || "1234";
 
+interface CalendarEventItem {
+  id: string;
+  title: string;
+  start: string;
+  end?: string | null;
+  location?: string;
+  allDay?: boolean;
+}
+
 export async function GET(req: NextRequest) {
   const pin = req.headers.get("x-family-pin");
   const isAuth = pin === FAMILY_PIN;
 
-  // 1. Fetch 3-Day Weather (Open-Meteo - Free, No Key Needed)
   const lat = process.env.WEATHER_LAT || "37.0965";
   const lon = process.env.WEATHER_LON || "-113.5684";
-  let weather = null;
+  let weather: unknown = null;
 
   try {
     const wRes = await fetch(
@@ -24,7 +32,6 @@ export async function GET(req: NextRequest) {
     console.error("Weather error:", e);
   }
 
-  // If in Demo Mode, return sample calendar & sample nature photos
   if (!isAuth) {
     return NextResponse.json({
       weather,
@@ -41,20 +48,30 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // 2. Parse Live Google Calendar .ics URLs
-  const icalUrls = (process.env.ICAL_URLS || "").split(",").map((s) => s.trim()).filter(Boolean);
-  const events: any[] = [];
+  const icalUrls = (process.env.ICAL_URLS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const events: CalendarEventItem[] = [];
   const now = new Date();
-  const twoWeeksOut = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const twoWeeksOut = new Date(startOfDay.getTime() + 14 * 24 * 60 * 60 * 1000);
 
   for (const url of icalUrls) {
     try {
       const parsed = await ical.async.fromURL(url);
-      for (const k in parsed) {
-        const ev: any = parsed[k];
-        if (ev.type === "VEVENT" && ev.start) {
+      for (const k of Object.keys(parsed)) {
+        const ev = parsed[k] as {
+          type?: string;
+          uid?: string;
+          summary?: string;
+          start?: Date;
+          end?: Date;
+          location?: string;
+        };
+        if (ev && ev.type === "VEVENT" && ev.start) {
           const startDate = new Date(ev.start);
-          if (startDate >= new Date(now.setHours(0, 0, 0, 0)) && startDate <= twoWeeksOut) {
+          if (startDate >= startOfDay && startDate <= twoWeeksOut) {
             events.push({
               id: ev.uid || k,
               title: ev.summary || "Busy",
@@ -71,7 +88,6 @@ export async function GET(req: NextRequest) {
   }
   events.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
-  // 3. Scrape Google Photos Shared Album for Screensaver
   let photos: string[] = [];
   const albumUrl = process.env.GOOGLE_PHOTOS_ALBUM_URL;
   if (albumUrl) {
@@ -80,7 +96,7 @@ export async function GET(req: NextRequest) {
       const html = await pRes.text();
       const regex = /"(https:\/\/lh3\.googleusercontent\.com\/pw\/[^"]+)"/g;
       const matches = new Set<string>();
-      let match;
+      let match: RegExpExecArray | null;
       while ((match = regex.exec(html)) !== null) {
         matches.add(`${match[1]}=w1400-h1050-no`);
       }

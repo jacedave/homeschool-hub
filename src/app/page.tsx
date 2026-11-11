@@ -1,13 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   CheckCircle2,
   Circle,
   Star,
   Utensils,
   Calendar as CalendarIcon,
-  RotateCcw,
   BookOpen,
   Sparkles,
   Trophy,
@@ -17,19 +16,77 @@ import {
   Lock,
   Unlock,
   CloudSun,
-  Trash2,
   X,
 } from "lucide-react";
 
-// --- DEMO FALLBACK DATA (Shown to public portfolio visitors without PIN) ---
-const DEMO_KIDS = [
+type TabType = "tasks" | "calendar" | "rewards" | "meals" | "shopping";
+type TaskCategory = "school" | "chore";
+
+interface Kid {
+  id: string;
+  name: string;
+  stars: number;
+  color: string;
+}
+
+interface TaskItem {
+  id: string;
+  title: string;
+  assignee: string;
+  category: TaskCategory;
+  points: number;
+  completed: boolean;
+}
+
+interface RewardItem {
+  id: string;
+  title: string;
+  cost: number;
+  icon: string;
+}
+
+interface MealItem {
+  id: string;
+  day: string;
+  breakfast: string;
+  lunch: string;
+  dinner: string;
+}
+
+interface ShoppingItem {
+  id: string;
+  item: string;
+  category: string;
+  checked: boolean;
+}
+
+interface CalendarEvent {
+  id: string;
+  title: string;
+  start: string;
+  end?: string | null;
+  location?: string;
+}
+
+interface WeatherData {
+  current_weather?: {
+    temperature: number;
+  };
+  daily?: {
+    time: string[];
+    temperature_2m_max: number[];
+    temperature_2m_min: number[];
+  };
+}
+
+const DEMO_KIDS: Kid[] = [
   { id: "k1", name: "Alex", stars: 14, color: "blue" },
   { id: "k2", name: "Sam", stars: 11, color: "emerald" },
   { id: "k3", name: "Jordan", stars: 9, color: "amber" },
   { id: "k4", name: "Taylor", stars: 7, color: "purple" },
 ];
 
-const DEMO_TASKS = [
+const DEMO_TASKS: TaskItem[] = [
   { id: "t1", title: "Math Lesson", assignee: "Alex", category: "school", points: 2, completed: false },
   { id: "t2", title: "Reading (20 mins)", assignee: "Alex", category: "school", points: 1, completed: false },
   { id: "t3", title: "Make Bed & Tidy Room", assignee: "Alex", category: "chore", points: 1, completed: false },
@@ -41,7 +98,7 @@ const DEMO_TASKS = [
   { id: "t9", title: "Put Toys in Bin", assignee: "Taylor", category: "chore", points: 1, completed: false },
 ];
 
-const DEMO_REWARDS = [
+const DEMO_REWARDS: RewardItem[] = [
   { id: "r1", title: "30 Mins Screen Time", cost: 10, icon: "🎮" },
   { id: "r2", title: "Ice Cream Sundae Night", cost: 20, icon: "🍨" },
   { id: "r3", title: "Pick Friday Family Movie", cost: 25, icon: "🍿" },
@@ -49,7 +106,7 @@ const DEMO_REWARDS = [
   { id: "r5", title: "Special Trip with Dad", cost: 40, icon: "🥏" },
 ];
 
-const DEMO_MEALS = [
+const DEMO_MEALS: MealItem[] = [
   { id: "m1", day: "Monday", breakfast: "Oatmeal & Berries", lunch: "Turkey Wraps", dinner: "Taco Night" },
   { id: "m2", day: "Tuesday", breakfast: "Scrambled Eggs", lunch: "Quesadillas", dinner: "Baked Ziti & Salad" },
   { id: "m3", day: "Wednesday", breakfast: "Fresh Milled Pancakes", lunch: "Leftovers", dinner: "Slow Cooker Roast" },
@@ -59,7 +116,7 @@ const DEMO_MEALS = [
   { id: "m7", day: "Sunday", breakfast: "Cinnamon Rolls", lunch: "Sunday Roast", dinner: "Soup & Fresh Bread" },
 ];
 
-const DEMO_SHOPPING = [
+const DEMO_SHOPPING: ShoppingItem[] = [
   { id: "s1", item: "Whole Wheat Berries", category: "Pantry", checked: false },
   { id: "s2", item: "Raw Milk & Heavy Cream", category: "Dairy", checked: false },
   { id: "s3", item: "Apples & Bananas", category: "Produce", checked: false },
@@ -73,12 +130,13 @@ const COLOR_MAP: Record<string, { text: string; bg: string; border: string; badg
   purple: { text: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/30", badge: "bg-purple-500" },
 };
 
-// Web Audio API victory fanfare (Zero external audio files needed, works on iOS 15)
 function playVictorySound() {
   try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = new AudioCtx();
-    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5, E5, G5, C6
+    const notes = [523.25, 659.25, 783.99, 1046.5];
     notes.forEach((freq, idx) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -91,57 +149,49 @@ function playVictorySound() {
       osc.start(ctx.currentTime + idx * 0.11);
       osc.stop(ctx.currentTime + idx * 0.11 + 0.35);
     });
-  } catch (e) {
+  } catch {
     // Ignore audio errors if muted
   }
 }
 
 export default function FamilyWallPlanner() {
-  const [activeTab, setActiveTab] = useState<"tasks" | "calendar" | "rewards" | "meals" | "shopping">("tasks");
+  const [activeTab, setActiveTab] = useState<TabType>("tasks");
   const [pin, setPin] = useState<string>("");
   const [isLiveMode, setIsLiveMode] = useState<boolean>(false);
   const [showPinModal, setShowPinModal] = useState<boolean>(false);
   const [pinInput, setPinInput] = useState<string>("");
 
-  // App State
-  const [kids, setKids] = useState<any[]>(DEMO_KIDS);
-  const [tasks, setTasks] = useState<any[]>(DEMO_TASKS);
-  const [rewards, setRewards] = useState<any[]>(DEMO_REWARDS);
-  const [meals, setMeals] = useState<any[]>(DEMO_MEALS);
-  const [shopping, setShopping] = useState<any[]>(DEMO_SHOPPING);
-  const [events, setEvents] = useState<any[]>([]);
+  const [kids, setKids] = useState<Kid[]>(DEMO_KIDS);
+  const [tasks, setTasks] = useState<TaskItem[]>(DEMO_TASKS);
+  const [rewards, setRewards] = useState<RewardItem[]>(DEMO_REWARDS);
+  const [meals, setMeals] = useState<MealItem[]>(DEMO_MEALS);
+  const [shopping, setShopping] = useState<ShoppingItem[]>(DEMO_SHOPPING);
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [photos, setPhotos] = useState<string[]>([]);
-  const [weather, setWeather] = useState<any>(null);
+  const [weather, setWeather] = useState<WeatherData | null>(null);
 
-  // Modals & Overlays
-  const [celebration, setCelebration] = useState<{ name: string; title: string; points: number; icon: string } | null>(null);
+  const [celebration, setCelebration] = useState<{
+    name: string;
+    title: string;
+    points: number;
+    icon: string;
+  } | null>(null);
   const [showAddTask, setShowAddTask] = useState<boolean>(false);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskAssignee, setNewTaskAssignee] = useState("");
-  const [newTaskCategory, setNewTaskCategory] = useState<"school" | "chore">("school");
+  const [newTaskCategory, setNewTaskCategory] = useState<TaskCategory>("school");
   const [newTaskPoints, setNewTaskPoints] = useState(1);
   const [newShoppingItem, setNewShoppingItem] = useState("");
 
-  // Screensaver State
   const [screensaverActive, setScreensaverActive] = useState<boolean>(false);
   const [photoIndex, setPhotoIndex] = useState<number>(0);
-  const idleTimerRef = useRef<any>(null);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clock
   const [currentTime, setCurrentTime] = useState<string>("");
   const [currentDate, setCurrentDate] = useState<string>("");
   const [todayName, setTodayName] = useState<string>("Wednesday");
 
-  // Load PIN and Fetch Data
-  useEffect(() => {
-    const savedPin = localStorage.getItem("family_hub_pin") || "";
-    setPin(savedPin);
-    fetchAllData(savedPin);
-    const syncTimer = setInterval(() => fetchAllData(savedPin), 60000);
-    return () => clearInterval(syncTimer);
-  }, []);
-
-  async function fetchAllData(activePin: string) {
+  const fetchAllData = useCallback(async (activePin: string) => {
     try {
       const headers = { "x-family-pin": activePin };
       const [hubRes, extRes] = await Promise.all([
@@ -167,12 +217,19 @@ export default function FamilyWallPlanner() {
         if (extData.events) setEvents(extData.events);
         if (extData.photos?.length) setPhotos(extData.photos);
       }
-    } catch (e) {
-      console.error("Sync error:", e);
+    } catch (err) {
+      console.error("Sync error:", err);
     }
-  }
+  }, []);
 
-  // Clock Updater
+  useEffect(() => {
+    const savedPin = localStorage.getItem("family_hub_pin") || "";
+    setPin(savedPin);
+    fetchAllData(savedPin);
+    const syncTimer = setInterval(() => fetchAllData(savedPin), 60000);
+    return () => clearInterval(syncTimer);
+  }, [fetchAllData]);
+
   useEffect(() => {
     const updateClock = () => {
       const now = new Date();
@@ -185,21 +242,21 @@ export default function FamilyWallPlanner() {
     return () => clearInterval(t);
   }, []);
 
-  // Idle Timer for Photo Screensaver (3 minutes of no touch)
-  const resetIdleTimer = () => {
-    if (screensaverActive) setScreensaverActive(false);
+  const resetIdleTimer = useCallback(() => {
+    setScreensaverActive(false);
     if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
     idleTimerRef.current = setTimeout(() => {
       setScreensaverActive(true);
     }, 180000);
-  };
+  }, []);
 
   useEffect(() => {
     resetIdleTimer();
-    return () => clearTimeout(idleTimerRef.current);
-  }, []);
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    };
+  }, [resetIdleTimer]);
 
-  // Rotate Screensaver Photo every 12 seconds
   useEffect(() => {
     if (!screensaverActive || photos.length === 0) return;
     const interval = setInterval(() => {
@@ -208,18 +265,16 @@ export default function FamilyWallPlanner() {
     return () => clearInterval(interval);
   }, [screensaverActive, photos]);
 
-  // --- ACTIONS ---
   const triggerCelebration = (name: string, title: string, points: number, icon = "🌟") => {
     playVictorySound();
     setCelebration({ name, title, points, icon });
     setTimeout(() => setCelebration(null), 3200);
   };
 
-  const toggleTask = async (task: any) => {
+  const toggleTask = async (task: TaskItem) => {
     const nextState = !task.completed;
     const pointDelta = nextState ? task.points : -task.points;
 
-    // Optimistic UI update
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, completed: nextState } : t)));
     const targetKid = kids.find((k) => k.name === task.assignee);
     const newStarCount = targetKid ? Math.max(0, targetKid.stars + pointDelta) : 0;
@@ -263,7 +318,7 @@ export default function FamilyWallPlanner() {
     if (!newTaskTitle.trim()) return;
     const assignee = newTaskAssignee || kids[0]?.name || "Alex";
 
-    const tempTask = {
+    const tempTask: TaskItem = {
       id: "temp-" + Date.now(),
       title: newTaskTitle,
       assignee,
@@ -296,7 +351,7 @@ export default function FamilyWallPlanner() {
     }
   };
 
-  const redeemReward = async (kid: any, reward: any) => {
+  const redeemReward = async (kid: Kid, reward: RewardItem) => {
     if (kid.stars < reward.cost) return;
     const updatedStars = kid.stars - reward.cost;
 
@@ -320,7 +375,12 @@ export default function FamilyWallPlanner() {
   const handleAddShopping = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newShoppingItem.trim()) return;
-    const temp = { id: "s-" + Date.now(), item: newShoppingItem, category: "Grocery", checked: false };
+    const temp: ShoppingItem = {
+      id: "s-" + Date.now(),
+      item: newShoppingItem,
+      category: "Grocery",
+      checked: false,
+    };
     setShopping((prev) => [temp, ...prev]);
     setNewShoppingItem("");
 
@@ -338,7 +398,7 @@ export default function FamilyWallPlanner() {
     }
   };
 
-  const toggleShoppingItem = async (item: any) => {
+  const toggleShoppingItem = async (item: ShoppingItem) => {
     const nextState = !item.checked;
     setShopping((prev) => prev.map((s) => (s.id === item.id ? { ...s, checked: nextState } : s)));
     if (isLiveMode) {
@@ -360,19 +420,28 @@ export default function FamilyWallPlanner() {
     ? `${Math.round(weather.current_weather.temperature)}°F`
     : "72°F";
 
+  const navTabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: "tasks", label: "School & Chores", icon: CheckCircle2 },
+    { id: "calendar", label: "Calendar", icon: CalendarIcon },
+    { id: "rewards", label: "Rewards", icon: Trophy },
+    { id: "meals", label: "Meals", icon: Utensils },
+    { id: "shopping", label: "Groceries", icon: ShoppingCart },
+  ];
+
   return (
     <div
       onClick={resetIdleTimer}
       onTouchStart={resetIdleTimer}
       className="relative flex flex-col h-screen w-screen bg-slate-900 text-slate-100 p-3 select-none overflow-hidden"
     >
-      {/* --- GOOGLE PHOTOS DIGITAL FRAME SCREENSAVER --- */}
+      {/* GOOGLE PHOTOS DIGITAL FRAME SCREENSAVER */}
       {screensaverActive && (
         <div
           onClick={() => setScreensaverActive(false)}
           className="fixed inset-0 z-50 bg-black flex items-end justify-between p-10 cursor-pointer"
         >
           {photos.length > 0 && (
+            // eslint-disable-next-line @next/next/no-img-element
             <img
               src={photos[photoIndex]}
               alt="Family Memory"
@@ -381,7 +450,9 @@ export default function FamilyWallPlanner() {
           )}
           <div className="relative z-10 bg-black/60 backdrop-blur-md px-6 py-4 rounded-2xl border border-white/15">
             <div className="text-5xl font-bold text-white tracking-tight">{currentTime}</div>
-            <div className="text-lg text-slate-200 mt-1">{currentDate} • {currentTemp}</div>
+            <div className="text-lg text-slate-200 mt-1">
+              {currentDate} • {currentTemp}
+            </div>
           </div>
           <div className="relative z-10 bg-black/60 backdrop-blur-md px-5 py-3 rounded-2xl border border-white/15 text-sm text-slate-300">
             Tap anywhere to open Family Hub
@@ -389,7 +460,7 @@ export default function FamilyWallPlanner() {
         </div>
       )}
 
-      {/* --- GIANT CELEBRATION OVERLAY --- */}
+      {/* GIANT CELEBRATION OVERLAY */}
       {celebration && (
         <div
           onClick={() => setCelebration(null)}
@@ -409,7 +480,7 @@ export default function FamilyWallPlanner() {
         </div>
       )}
 
-      {/* --- TOP HEADER BAR --- */}
+      {/* TOP HEADER BAR */}
       <header className="flex items-center justify-between bg-slate-800/90 border border-slate-700 rounded-2xl px-4 py-2.5 mb-3 shrink-0">
         <div className="flex items-center space-x-3">
           <button
@@ -431,7 +502,6 @@ export default function FamilyWallPlanner() {
           </div>
         </div>
 
-        {/* Today's Dinner Pill */}
         <div
           onClick={() => setActiveTab("meals")}
           className="flex items-center space-x-2 bg-slate-900/80 px-3.5 py-1.5 rounded-xl border border-slate-700 cursor-pointer"
@@ -443,7 +513,6 @@ export default function FamilyWallPlanner() {
           </span>
         </div>
 
-        {/* Weather + Photo Frame Trigger + Clock */}
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-1.5 text-sm font-medium text-sky-300">
             <CloudSun className="w-5 h-5" />
@@ -462,9 +531,8 @@ export default function FamilyWallPlanner() {
         </div>
       </header>
 
-      {/* --- MAIN CONTENT AREA --- */}
+      {/* MAIN CONTENT AREA */}
       <main className="flex-1 min-h-0 overflow-hidden">
-        {/* TAB 1: CHORES & HOMESCHOOL */}
         {activeTab === "tasks" && (
           <div className="flex flex-col h-full">
             <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">
@@ -547,7 +615,6 @@ export default function FamilyWallPlanner() {
           </div>
         )}
 
-        {/* TAB 2: GOOGLE CALENDAR & 3-DAY WEATHER */}
         {activeTab === "calendar" && (
           <div className="grid grid-cols-3 gap-4 h-full">
             <div className="col-span-2 bg-slate-800/50 border border-slate-700 rounded-2xl p-4 overflow-y-auto">
@@ -606,9 +673,9 @@ export default function FamilyWallPlanner() {
                             })}
                       </span>
                       <span className="text-sm font-bold text-sky-300">
-                        {Math.round(weather.daily.temperature_2m_max[idx])}° /{" "}
+                        {Math.round(weather.daily?.temperature_2m_max[idx] ?? 70)}° /{" "}
                         <span className="text-slate-400">
-                          {Math.round(weather.daily.temperature_2m_min[idx])}°
+                          {Math.round(weather.daily?.temperature_2m_min[idx] ?? 50)}°
                         </span>
                       </span>
                     </div>
@@ -622,7 +689,6 @@ export default function FamilyWallPlanner() {
           </div>
         )}
 
-        {/* TAB 3: REWARDS STORE */}
         {activeTab === "rewards" && (
           <div className="flex flex-col h-full bg-slate-800/50 border border-slate-700 rounded-2xl p-4 overflow-y-auto">
             <h2 className="text-lg font-bold text-amber-400 mb-3">
@@ -666,7 +732,6 @@ export default function FamilyWallPlanner() {
           </div>
         )}
 
-        {/* TAB 4: WEEKLY MEAL PLANNER */}
         {activeTab === "meals" && (
           <div className="grid grid-cols-7 gap-2 h-full">
             {meals.map((m) => {
@@ -705,7 +770,6 @@ export default function FamilyWallPlanner() {
           </div>
         )}
 
-        {/* TAB 5: SHOPPING & GROCERY LIST */}
         {activeTab === "shopping" && (
           <div className="grid grid-cols-3 gap-4 h-full">
             <div className="col-span-2 bg-slate-800/50 border border-slate-700 rounded-2xl p-4 overflow-y-auto">
@@ -760,22 +824,16 @@ export default function FamilyWallPlanner() {
         )}
       </main>
 
-      {/* --- BOTTOM NAVIGATION DOCK --- */}
+      {/* BOTTOM NAVIGATION DOCK */}
       <footer className="flex items-center justify-between bg-slate-800/90 border border-slate-700 rounded-2xl px-4 py-2 mt-3 shrink-0">
         <div className="flex items-center space-x-2">
-          {[
-            { id: "tasks", label: "School & Chores", icon: CheckCircle2 },
-            { id: "calendar", label: "Calendar", icon: CalendarIcon },
-            { id: "rewards", label: "Rewards", icon: Trophy },
-            { id: "meals", label: "Meals", icon: Utensils },
-            { id: "shopping", label: "Groceries", icon: ShoppingCart },
-          ].map((tab) => {
+          {navTabs.map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => setActiveTab(tab.id)}
                 className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
                   active
                     ? "bg-indigo-500 text-white shadow-lg"
@@ -798,7 +856,7 @@ export default function FamilyWallPlanner() {
         </button>
       </footer>
 
-      {/* --- ADD TASK MODAL --- */}
+      {/* ADD TASK MODAL */}
       {showAddTask && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70">
           <form
@@ -836,7 +894,7 @@ export default function FamilyWallPlanner() {
 
               <select
                 value={newTaskCategory}
-                onChange={(e) => setNewTaskCategory(e.target.value as any)}
+                onChange={(e) => setNewTaskCategory(e.target.value as TaskCategory)}
                 className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
               >
                 <option value="school">Schoolwork</option>
@@ -866,7 +924,7 @@ export default function FamilyWallPlanner() {
         </div>
       )}
 
-      {/* --- PIN UNLOCK MODAL (Switches from Demo Mode to Live Family Data) --- */}
+      {/* PIN UNLOCK MODAL */}
       {showPinModal && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/75">
           <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 w-80 space-y-4">
