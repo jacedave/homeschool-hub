@@ -4,16 +4,16 @@ import React, { useState } from "react";
 import { X } from "lucide-react";
 import { DAY_ABBRS, Kid, RepeatMode, RewardItem, TaskCategory, TaskItem } from "@/lib/types";
 
-const input = "w-full rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-3 text-white";
+const input = "w-full rounded-xl border border-sky-100 bg-sky-50 px-3.5 py-3 text-slate-800";
 
 function Shell({ title, onClose, children, width = "w-[28rem]" }: { title: string; onClose: () => void; children: React.ReactNode; width?: string }) {
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
-      <div className={`scroll-y max-h-full ${width} max-w-full space-y-4 rounded-3xl border border-slate-700 bg-slate-800 p-6`}>
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className={`scroll-y max-h-full ${width} max-w-full space-y-4 rounded-3xl border border-sky-100 bg-white shadow-sm p-6`}>
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold text-white">{title}</h3>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-full p-1.5 active:bg-slate-700">
-            <X className="h-5 w-5 text-slate-400" />
+          <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+          <button type="button" onClick={onClose} aria-label="Close" className="rounded-full p-1.5 active:bg-sky-100">
+            <X className="h-5 w-5 text-slate-500" />
           </button>
         </div>
         {children}
@@ -72,14 +72,14 @@ export function AddTaskModal({ kids, onSave, onClose }: { kids: Kid[]; onSave: (
         </div>
 
         <div>
-          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">Repeat</p>
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Repeat</p>
           <div className="grid grid-cols-4 gap-1.5">
             {repeatOptions.map(([value, label]) => (
               <button
                 type="button"
                 key={value}
                 onClick={() => setRepeat(value)}
-                className={`rounded-xl py-2.5 text-xs font-bold ${repeat === value ? "bg-indigo-500 text-white" : "bg-slate-900 text-slate-300"}`}
+                className={`rounded-xl py-2.5 text-xs font-bold ${repeat === value ? "bg-indigo-500 text-white" : "bg-sky-50 text-slate-600"}`}
               >
                 {label}
               </button>
@@ -94,7 +94,7 @@ export function AddTaskModal({ kids, onSave, onClose }: { kids: Kid[]; onSave: (
                     type="button"
                     key={d}
                     onClick={() => setDays((cur) => (on ? cur.filter((x) => x !== d) : [...cur, d]))}
-                    className={`rounded-lg py-2 text-xs font-bold ${on ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-400"}`}
+                    className={`rounded-lg py-2 text-xs font-bold ${on ? "bg-sky-500 text-white" : "bg-sky-50 text-slate-500"}`}
                   >
                     {d}
                   </button>
@@ -102,12 +102,12 @@ export function AddTaskModal({ kids, onSave, onClose }: { kids: Kid[]; onSave: (
               })}
             </div>
           )}
-          {repeat !== "none" && <p className="mt-1.5 text-xs text-slate-400">Resets automatically each day after it&apos;s completed.</p>}
+          {repeat !== "none" && <p className="mt-1.5 text-xs text-slate-500">Resets automatically each day after it&apos;s completed.</p>}
         </div>
 
-        <div className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2">
-          <span className="text-sm text-slate-300">Star points</span>
-          <input type="number" min={1} max={50} value={points} onChange={(e) => setPoints(Number(e.target.value))} className="w-20 bg-transparent text-right text-lg font-bold text-amber-300" />
+        <div className="flex items-center justify-between rounded-xl border border-sky-100 bg-sky-50 px-3.5 py-2">
+          <span className="text-sm text-slate-600">Star points</span>
+          <input type="number" min={1} max={50} value={points} onChange={(e) => setPoints(Number(e.target.value))} className="w-20 bg-transparent text-right text-lg font-bold text-amber-600" />
         </div>
 
         <input type="url" placeholder="Celebration picture URL (optional)" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} className={input} />
@@ -139,9 +139,9 @@ export function AddRewardModal({ onSave, onClose }: { onSave: (r: NewReward) => 
       >
         <input required autoFocus placeholder="Reward (e.g., Trip to the Trampoline Park)" value={title} onChange={(e) => setTitle(e.target.value)} className={input} />
         <div className="grid grid-cols-[1fr_5rem] gap-2">
-          <div className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2">
-            <span className="text-sm text-slate-300">Cost (stars)</span>
-            <input type="number" min={1} value={cost} onChange={(e) => setCost(Number(e.target.value))} className="w-20 bg-transparent text-right text-lg font-bold text-amber-300" />
+          <div className="flex items-center justify-between rounded-xl border border-sky-100 bg-sky-50 px-3.5 py-2">
+            <span className="text-sm text-slate-600">Cost (stars)</span>
+            <input type="number" min={1} value={cost} onChange={(e) => setCost(Number(e.target.value))} className="w-20 bg-transparent text-right text-lg font-bold text-amber-600" />
           </div>
           <input value={icon} onChange={(e) => setIcon(e.target.value)} maxLength={4} className={`${input} text-center text-2xl`} aria-label="Emoji" />
         </div>
@@ -156,7 +156,7 @@ export function AddRewardModal({ onSave, onClose }: { onSave: (r: NewReward) => 
               type="button"
               key={o.label}
               onClick={() => setCombinable(o.v)}
-              className={`rounded-xl p-3 text-left ${combinable === o.v ? "bg-sky-500 text-white" : "bg-slate-900 text-slate-300"}`}
+              className={`rounded-xl p-3 text-left ${combinable === o.v ? "bg-sky-500 text-white" : "bg-sky-50 text-slate-600"}`}
             >
               <span className="block text-sm font-bold">{o.label}</span>
               <span className="block text-xs opacity-80">{o.hint}</span>

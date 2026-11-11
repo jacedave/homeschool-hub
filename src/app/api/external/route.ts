@@ -1,20 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as ical from "node-ical";
+import { FAMILY_TZ } from "@/lib/config";
+import { expandEvents, ExpandedEvent } from "@/lib/icalExpand";
+import { zonedStartOfDay } from "@/lib/rules";
 
-const FAMILY_PIN = process.env.FAMILY_PIN || "1234";
+const FAMILY_PIN = process.env.FAMILY_PIN;
 
-interface CalendarEventItem {
-  id: string;
-  title: string;
-  start: string;
-  end?: string | null;
-  location?: string;
-  allDay?: boolean;
-}
+/** Google Photos escapes characters inside the page's JSON, e.g. "=" for "=". */
+const unescapeUrl = (s: string) => s.replace(/\\u003d/g, "=").replace(/\\u0026/g, "&").replace(/\\\//g, "/");
 
 export async function GET(req: NextRequest) {
   const pin = req.headers.get("x-family-pin");
-  const isAuth = pin === FAMILY_PIN;
+  const isAuth = !!FAMILY_PIN && pin === FAMILY_PIN;
 
   const lat = process.env.WEATHER_LAT || "37.0965";
   const lon = process.env.WEATHER_LON || "-113.5684";
@@ -22,12 +19,10 @@ export async function GET(req: NextRequest) {
 
   try {
     const wRes = await fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,weathercode&temperature_unit=fahrenheit&timezone=auto`,
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,weathercode&temperature_unit=fahrenheit&timezone=${encodeURIComponent(FAMILY_TZ)}`,
       { next: { revalidate: 1800 } }
     );
-    if (wRes.ok) {
-      weather = await wRes.json();
-    }
+    if (wRes.ok) weather = await wRes.json();
   } catch (e) {
     console.error("Weather error:", e);
   }
@@ -52,36 +47,15 @@ export async function GET(req: NextRequest) {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const events: CalendarEventItem[] = [];
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const twoWeeksOut = new Date(startOfDay.getTime() + 14 * 24 * 60 * 60 * 1000);
+
+  const rangeStart = zonedStartOfDay(FAMILY_TZ);
+  const rangeEnd = new Date(rangeStart.getTime() + 14 * 24 * 60 * 60 * 1000);
+  const events: ExpandedEvent[] = [];
 
   for (const url of icalUrls) {
     try {
       const parsed = await ical.async.fromURL(url);
-      for (const k of Object.keys(parsed)) {
-        const ev = parsed[k] as {
-          type?: string;
-          uid?: string;
-          summary?: string;
-          start?: Date;
-          end?: Date;
-          location?: string;
-        };
-        if (ev && ev.type === "VEVENT" && ev.start) {
-          const startDate = new Date(ev.start);
-          if (startDate >= startOfDay && startDate <= twoWeeksOut) {
-            events.push({
-              id: ev.uid || k,
-              title: ev.summary || "Busy",
-              start: startDate.toISOString(),
-              end: ev.end ? new Date(ev.end).toISOString() : null,
-              location: ev.location || "",
-            });
-          }
-        }
-      }
+      events.push(...expandEvents(parsed, rangeStart, rangeEnd));
     } catch (e) {
       console.error("iCal parse error:", e);
     }
@@ -98,7 +72,8 @@ export async function GET(req: NextRequest) {
       const matches = new Set<string>();
       let match: RegExpExecArray | null;
       while ((match = regex.exec(html)) !== null) {
-        matches.add(`${match[1]}=w1400-h1050-no`);
+        const base = unescapeUrl(match[1]).split("=")[0];
+        matches.add(`${base}=w1600-h1200`);
       }
       photos = Array.from(matches).slice(0, 40);
     } catch (e) {
@@ -106,5 +81,5 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ weather, events: events.slice(0, 25), photos });
+  return NextResponse.json({ weather, events: events.slice(0, 40), photos });
 }

@@ -65,6 +65,25 @@ export interface CalendarEvent {
   start: string;
   end?: string | null;
   location?: string;
+  allDay?: boolean;
+}
+
+/** A reward the kids have earned, for the parents' tracker. */
+export interface Redemption {
+  id: string;
+  reward: string;
+  kids: string;
+  details: string;
+  cost: number;
+  date: string;
+  fulfilled: boolean;
+}
+
+export interface SleepSettings {
+  enabled: boolean;
+  /** 24h "HH:MM" device-local times. */
+  sleepAt: string;
+  wakeAt: string;
 }
 
 export interface WeatherData {

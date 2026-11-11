@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isDueOn, parseRepeat, parseRepeatDays, todayIn, validateDeposit } from "@/lib/rules";
+import { FAMILY_TZ } from "@/lib/config";
 import type { Contribution, Kid, RewardItem } from "@/lib/types";
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 const BASE_ID = process.env.AIRTABLE_BASE_ID;
 const FAMILY_PIN = process.env.FAMILY_PIN;
-const TIME_ZONE = process.env.FAMILY_TIMEZONE || "America/Denver";
+const TIME_ZONE = FAMILY_TZ;
 
-const WRITABLE_TABLES = ["Kids", "Tasks", "Rewards", "Meals", "Shopping"];
+const WRITABLE_TABLES = ["Kids", "Tasks", "Rewards", "Meals", "Shopping", "Redemptions"];
 
 interface AirtableRecord {
   id: string;
@@ -82,6 +83,18 @@ const toKid = (r: AirtableRecord): Kid => ({
   color: String(r.fields.Color || "blue"),
 });
 
+/** The base has this field spelled "Asignee"; accept either spelling. */
+const assigneeOf = (f: Record<string, unknown>) => String(f.Assignee ?? f.Asignee ?? "");
+
+/** Optional table: returns [] if it doesn't exist yet. */
+async function fetchOptional(table: string): Promise<AirtableRecord[]> {
+  try {
+    return await fetchTable(table);
+  } catch {
+    return [];
+  }
+}
+
 const toReward = (r: AirtableRecord): RewardItem => ({
   id: r.id,
   title: String(r.fields.Title || ""),
@@ -114,13 +127,14 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [kids, tasks, rewards, meals, shopping, contributions] = await Promise.all([
+    const [kids, tasks, rewards, meals, shopping, contributions, redemptionRows] = await Promise.all([
       fetchTable("Kids"),
       fetchTable("Tasks"),
       fetchTable("Rewards"),
       fetchTable("Meals"),
       fetchTable("Shopping"),
       fetchContributions(),
+      fetchOptional("Redemptions"),
     ]);
 
     const { date: today, dayIndex } = todayIn(TIME_ZONE);
@@ -143,6 +157,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       mode: "live",
       today,
+      timeZone: TIME_ZONE,
       kids: kids.map(toKid),
       tasks: tasks.map((r) => {
         const repeat = parseRepeat(r.fields.Repeat);
@@ -150,8 +165,8 @@ export async function GET(req: NextRequest) {
         return {
           id: r.id,
           title: String(r.fields.Title || ""),
-          assignee: String(r.fields.Assignee || ""),
-          category: r.fields.Category === "school" ? "school" : "chore",
+          assignee: assigneeOf(r.fields),
+          category: String(r.fields.Category || "").toLowerCase() === "chore" ? "chore" : "school",
           points: Number(r.fields.Points || 1),
           completed: Boolean(r.fields.Completed),
           repeat,
@@ -163,6 +178,17 @@ export async function GET(req: NextRequest) {
       }),
       rewards: rewards.map(toReward),
       contributions,
+      redemptions: redemptionRows
+        .map((r) => ({
+          id: r.id,
+          reward: String(r.fields.Reward || ""),
+          kids: String(r.fields.Kids || ""),
+          details: String(r.fields.Details || ""),
+          cost: Number(r.fields.Cost || 0),
+          date: String(r.fields.Date || ""),
+          fulfilled: Boolean(r.fields.Fulfilled),
+        }))
+        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
       meals: meals.map((r) => ({
         id: r.id,
         day: String(r.fields.Day || ""),
@@ -203,7 +229,7 @@ async function completeTask(taskId: string, completed: boolean) {
   if (Boolean(task.fields.Completed) === completed) return { ok: true, unchanged: true };
 
   const points = Number(task.fields.Points || 1);
-  const assignee = String(task.fields.Assignee || "");
+  const assignee = assigneeOf(task.fields);
   const kids = (await fetchTable("Kids")).map(toKid);
   const kid = kids.find((k) => k.name === assignee);
 
@@ -245,6 +271,24 @@ async function deposit(rewardId: string, kidId: string, amount: number) {
       "Contributions",
       jar.map((c) => ({ id: c.id, fields: { Claimed: true } }))
     );
+
+    // Log it for the parents' tracker. The Redemptions table is optional, so never fail the claim over it.
+    try {
+      const kidList = (await fetchTable("Kids")).map(toKid);
+      const byKid = new Map<string, number>();
+      jar.forEach((c) => byKid.set(c.kidId, (byKid.get(c.kidId) || 0) + c.amount));
+      const parts = Array.from(byKid, ([id, amt]) => `${kidList.find((k) => k.id === id)?.name || "?"} ${amt}★`);
+      await createRecord("Redemptions", {
+        Reward: reward.title,
+        Kids: Array.from(byKid.keys()).map((id) => kidList.find((k) => k.id === id)?.name || "?").join(", "),
+        Details: parts.join(", "),
+        Cost: reward.cost,
+        Date: todayIn(TIME_ZONE).date,
+        Fulfilled: false,
+      });
+    } catch (e) {
+      console.error("Could not log redemption (is there a Redemptions table?):", e);
+    }
     return { ok: true, claimed: true };
   }
   return { ok: true, claimed: false };
@@ -287,7 +331,21 @@ export async function POST(req: NextRequest) {
       case "delete": {
         if (!body.table || !WRITABLE_TABLES.includes(body.table)) return fail("Table not allowed");
         if (body.action === "create") {
-          return NextResponse.json(await createRecord(body.table, body.fields || {}));
+          let fields = body.fields || {};
+          if (body.table === "Tasks") {
+            // The base uses "Task"/"Chore" category names and may spell the field "Asignee".
+            fields = { ...fields, Category: fields.Category === "chore" ? "chore" : "task" };
+            try {
+              return NextResponse.json(await createRecord("Tasks", fields));
+            } catch (e) {
+              if (e instanceof Error && /unknown field/i.test(e.message) && "Assignee" in fields) {
+                const { Assignee, ...rest } = fields;
+                return NextResponse.json(await createRecord("Tasks", { ...rest, Asignee: Assignee }));
+              }
+              throw e;
+            }
+          }
+          return NextResponse.json(await createRecord(body.table, fields));
         }
         if (!body.recordId) return fail("recordId required");
         if (body.action === "update") {

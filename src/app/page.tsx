@@ -12,14 +12,17 @@ import {
   Lock,
   Unlock,
   CloudSun,
+  Settings,
 } from "lucide-react";
 import Celebration from "@/components/Celebration";
 import TasksTab from "@/components/TasksTab";
 import RewardsTab from "@/components/RewardsTab";
+import { PhotoFrame, SleepScreen } from "@/components/Screensaver";
+import SettingsModal from "@/components/SettingsModal";
 import { CalendarTab, MealsTab, ShoppingTab } from "@/components/OtherTabs";
 import { AddRewardModal, AddTaskModal, NewReward, NewTask, PinModal } from "@/components/Modals";
 import { DEMO_CONTRIBUTIONS, DEMO_KIDS, DEMO_MEALS, DEMO_REWARDS, DEMO_SHOPPING, DEMO_TASKS } from "@/lib/demoData";
-import { remainingCost, validateDeposit } from "@/lib/rules";
+import { inSleepWindow, remainingCost, todayIn, validateDeposit } from "@/lib/rules";
 import { playVictorySound } from "@/lib/sound";
 import type {
   CalendarEvent,
@@ -27,7 +30,9 @@ import type {
   Contribution,
   Kid,
   MealItem,
+  Redemption,
   RewardItem,
+  SleepSettings,
   ShoppingItem,
   TabType,
   TaskItem,
@@ -54,6 +59,12 @@ export default function FamilyWallPlanner() {
   const [showPinModal, setShowPinModal] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
   const [showAddReward, setShowAddReward] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [redemptions, setRedemptions] = useState<Redemption[]>([]);
+  const [timeZone, setTimeZone] = useState("");
+  const [sleep, setSleep] = useState<SleepSettings>({ enabled: false, sleepAt: "21:00", wakeAt: "06:30" });
+  const [awakeUntil, setAwakeUntil] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const [kids, setKids] = useState<Kid[]>(DEMO_KIDS);
   const [tasks, setTasks] = useState<TaskItem[]>(DEMO_TASKS);
@@ -70,7 +81,6 @@ export default function FamilyWallPlanner() {
   const [notice, setNotice] = useState("");
 
   const [screensaverActive, setScreensaverActive] = useState(false);
-  const [photoIndex, setPhotoIndex] = useState(0);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [currentTime, setCurrentTime] = useState("");
@@ -112,7 +122,8 @@ export default function FamilyWallPlanner() {
         if (hub.contributions) setContributions(hub.contributions);
         if (hub.meals?.length) setMeals(hub.meals);
         if (hub.shopping) setShopping(hub.shopping);
-        if (hub.today) setToday(hub.today);
+        if (hub.redemptions) setRedemptions(hub.redemptions);
+        if (hub.timeZone) setTimeZone(hub.timeZone);
       } else {
         setIsLiveMode(false);
       }
@@ -132,6 +143,12 @@ export default function FamilyWallPlanner() {
     const savedPin = localStorage.getItem("family_hub_pin") || "";
     setPin(savedPin);
     pinRef.current = savedPin;
+    try {
+      const saved = localStorage.getItem("family_hub_sleep");
+      if (saved) setSleep(JSON.parse(saved));
+    } catch {
+      // ignore corrupt or unavailable storage
+    }
     fetchAllData(savedPin);
     const syncTimer = setInterval(() => fetchAllData(pinRef.current), 60000);
     return () => clearInterval(syncTimer);
@@ -140,15 +157,17 @@ export default function FamilyWallPlanner() {
   useEffect(() => {
     const updateClock = () => {
       const now = new Date();
-      setCurrentTime(now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
-      setCurrentDate(now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }));
-      setTodayName(now.toLocaleDateString("en-US", { weekday: "long" }));
-      setToday(localDate());
+      const tz = timeZone ? { timeZone } : {};
+      setCurrentTime(now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", ...tz }));
+      setCurrentDate(now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", ...tz }));
+      setTodayName(now.toLocaleDateString("en-US", { weekday: "long", ...tz }));
+      setToday(timeZone ? todayIn(timeZone, now).date : localDate());
+      setNowMs(now.getTime());
     };
     updateClock();
     const t = setInterval(updateClock, 10000);
     return () => clearInterval(t);
-  }, []);
+  }, [timeZone]);
 
   // When the day rolls over on the device, re-sync so repeating tasks reset right away.
   const lastDayRef = useRef("");
@@ -173,12 +192,6 @@ export default function FamilyWallPlanner() {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
     };
   }, [resetIdleTimer]);
-
-  useEffect(() => {
-    if (!screensaverActive || photos.length === 0) return;
-    const interval = setInterval(() => setPhotoIndex((prev) => (prev + 1) % photos.length), 12000);
-    return () => clearInterval(interval);
-  }, [screensaverActive, photos]);
 
   const closeCelebration = useCallback(() => setCelebration(null), []);
   const celebrate = (data: CelebrationData) => {
@@ -237,7 +250,7 @@ export default function FamilyWallPlanner() {
           Category: t.category,
           Points: t.points,
           Completed: false,
-          Repeat: t.repeat,
+          Repeat: t.repeat.charAt(0).toUpperCase() + t.repeat.slice(1),
           RepeatDays: t.repeatDays.join(","),
           ...(t.imageUrl ? { ImageUrl: t.imageUrl } : {}),
         },
@@ -293,8 +306,22 @@ export default function FamilyWallPlanner() {
           ? p.filter((c) => c.rewardId !== reward.id)
           : [...p, { id: "demo-c" + Date.now(), rewardId: reward.id, kidId: kid.id, amount }]
       );
-      if (fills) celebrate(claimedData);
-      else showNotice(`${kid.name} added ${amount}★ to ${reward.title}.`);
+      if (fills) {
+        const jar = [...contributions.filter((c) => c.rewardId === reward.id), { kidId: kid.id, amount }];
+        setRedemptions((p) => [
+          {
+            id: "demo-red" + Date.now(),
+            reward: reward.title,
+            kids: names.join(", "),
+            details: jar.map((c) => `${kids.find((k) => k.id === c.kidId)?.name} ${c.amount}★`).join(", "),
+            cost: reward.cost,
+            date: today || localDate(),
+            fulfilled: false,
+          },
+          ...p,
+        ]);
+        celebrate(claimedData);
+      } else showNotice(`${kid.name} added ${amount}★ to ${reward.title}.`);
       return;
     }
 
@@ -306,6 +333,17 @@ export default function FamilyWallPlanner() {
       showNotice(e instanceof Error ? e.message : "Couldn't add those stars.");
     }
     fetchAllData(pinRef.current);
+  };
+
+  const fulfill = async (r: Redemption) => {
+    setRedemptions((p) => p.map((x) => (x.id === r.id ? { ...x, fulfilled: true } : x)));
+    if (!isLiveMode) return;
+    try {
+      await hubPost({ action: "update", table: "Redemptions", recordId: r.id, fields: { Fulfilled: true } });
+    } catch (e) {
+      setRedemptions((p) => p.map((x) => (x.id === r.id ? { ...x, fulfilled: false } : x)));
+      showNotice(e instanceof Error ? e.message : "Couldn't save that change.");
+    }
   };
 
   const withdraw = async (c: Contribution) => {
@@ -354,31 +392,20 @@ export default function FamilyWallPlanner() {
   };
 
   const todaysMeal = meals.find((m) => m.day.toLowerCase() === todayName.toLowerCase()) || meals[0];
+  const sleeping = sleep.enabled && nowMs >= awakeUntil && inSleepWindow(sleep.sleepAt, sleep.wakeAt, new Date(nowMs));
   const currentTemp = weather?.current_weather?.temperature ? `${Math.round(weather.current_weather.temperature)}°F` : "";
 
   return (
     <div
       onClick={resetIdleTimer}
       onTouchStart={resetIdleTimer}
-      className="relative flex h-screen w-screen select-none flex-col overflow-hidden bg-slate-950 p-3 text-slate-100"
+      className="app-shell relative flex w-screen select-none flex-col overflow-hidden bg-sky-50 px-3 pt-3 text-slate-800"
     >
-      {/* Photo frame screensaver */}
       {screensaverActive && (
-        <div onClick={() => setScreensaverActive(false)} className="fixed inset-0 z-50 flex cursor-pointer items-end justify-between bg-black p-10">
-          {photos.length > 0 && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={photos[photoIndex]} alt="Family memory" className="absolute inset-0 h-full w-full object-cover opacity-90" />
-          )}
-          <div className="relative z-10 rounded-2xl border border-white/15 bg-black/60 px-6 py-4">
-            <div className="text-5xl font-bold tracking-tight text-white">{currentTime}</div>
-            <div className="mt-1 text-lg text-slate-200">
-              {currentDate}
-              {currentTemp && ` • ${currentTemp}`}
-            </div>
-          </div>
-          <div className="relative z-10 rounded-2xl border border-white/15 bg-black/60 px-5 py-3 text-sm text-slate-300">Tap anywhere to open Family Hub</div>
-        </div>
+        <PhotoFrame photos={photos} time={currentTime} date={currentDate} temp={currentTemp} onClose={() => setScreensaverActive(false)} />
       )}
+
+      {sleeping && <SleepScreen onWake={() => setAwakeUntil(Date.now() + 5 * 60 * 1000)} />}
 
       {celebration && <Celebration data={celebration} onClose={closeCelebration} />}
 
@@ -389,38 +416,46 @@ export default function FamilyWallPlanner() {
       )}
 
       {/* Header */}
-      <header className="mb-3 flex shrink-0 items-center justify-between rounded-2xl bg-slate-800/70 px-4 py-2.5">
+      <header className="mb-3 flex shrink-0 items-center justify-between rounded-2xl bg-white shadow-sm px-4 py-2.5">
         <div className="flex items-center gap-3">
           <button
             onClick={() => setShowPinModal(true)}
-            className={`rounded-xl p-2 ${isLiveMode ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"}`}
+            className={`rounded-xl p-2 ${isLiveMode ? "bg-emerald-500/15 text-emerald-600" : "bg-amber-500/15 text-amber-600"}`}
             title={isLiveMode ? "Live family mode" : "Demo mode — tap to enter PIN"}
           >
             {isLiveMode ? <Unlock className="h-5 w-5" /> : <Lock className="h-5 w-5" />}
           </button>
           <div>
             <h1 className="text-lg font-bold leading-tight">{isLiveMode ? "Family Hub" : "Family Hub (Demo)"}</h1>
-            <p className="text-xs text-slate-400">{currentDate}</p>
+            <p className="text-xs text-slate-500">{currentDate}</p>
           </div>
         </div>
 
-        <button onClick={() => setActiveTab("meals")} className="flex items-center gap-2 rounded-xl bg-slate-900/70 px-3.5 py-1.5">
-          <Utensils className="h-4 w-4 text-emerald-300" />
-          <span className="text-xs text-slate-400">Dinner</span>
-          <span className="text-sm font-semibold text-white">{todaysMeal?.dinner || "Tap to plan"}</span>
+        <button onClick={() => setActiveTab("meals")} className="flex items-center gap-2 rounded-xl bg-sky-50 px-3.5 py-1.5">
+          <Utensils className="h-4 w-4 text-emerald-600" />
+          <span className="text-xs text-slate-500">Dinner</span>
+          <span className="text-sm font-semibold text-slate-800">{todaysMeal?.dinner || "Tap to plan"}</span>
         </button>
 
         <div className="flex items-center gap-4">
           {currentTemp && (
-            <div className="flex items-center gap-1.5 text-sm font-semibold text-sky-300">
+            <div className="flex items-center gap-1.5 text-sm font-semibold text-sky-600">
               <CloudSun className="h-5 w-5" />
               {currentTemp}
             </div>
           )}
-          <button onClick={() => setScreensaverActive(true)} className="flex items-center gap-1.5 rounded-xl bg-slate-700/60 px-3 py-1.5 text-xs font-medium text-slate-200 active:bg-slate-600">
-            <ImageIcon className="h-4 w-4 text-pink-300" /> Photos
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setScreensaverActive(true);
+            }}
+            className="flex items-center gap-1.5 rounded-xl bg-sky-100 px-3 py-1.5 text-xs font-medium text-slate-700 active:bg-sky-200">
+            <ImageIcon className="h-4 w-4 text-pink-600" /> Photos
           </button>
-          <div className="text-xl font-bold tabular-nums text-white">{currentTime}</div>
+          <button onClick={() => setShowSettings(true)} aria-label="Settings" className="rounded-xl bg-sky-100 p-2 text-slate-700 active:bg-sky-200">
+            <Settings className="h-5 w-5" />
+          </button>
+          <div className="text-xl font-bold tabular-nums text-slate-800">{currentTime}</div>
         </div>
       </header>
 
@@ -435,6 +470,8 @@ export default function FamilyWallPlanner() {
             onDeposit={deposit}
             onWithdraw={withdraw}
             onAddReward={() => setShowAddReward(true)}
+            redemptions={redemptions}
+            onFulfill={fulfill}
           />
         )}
         {activeTab === "meals" && <MealsTab meals={meals} todayName={todayName} />}
@@ -444,7 +481,7 @@ export default function FamilyWallPlanner() {
       </main>
 
       {/* Bottom dock */}
-      <footer className="mt-3 flex shrink-0 items-center justify-between rounded-2xl bg-slate-800/70 px-3 py-2">
+      <footer className="mb-8 mt-3 flex shrink-0 items-center justify-between rounded-2xl bg-white shadow-sm px-3 py-2">
         <nav className="flex items-center gap-1.5">
           {NAV_TABS.map((tab) => {
             const Icon = tab.icon;
@@ -454,7 +491,7 @@ export default function FamilyWallPlanner() {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
                 className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition ${
-                  active ? "bg-indigo-500 text-white shadow-lg" : "text-slate-300 active:bg-slate-700/60"
+                  active ? "bg-indigo-500 text-white shadow-lg" : "text-slate-600 active:bg-sky-100"
                 }`}
               >
                 <Icon className="h-4 w-4" />
@@ -470,6 +507,21 @@ export default function FamilyWallPlanner() {
 
       {showAddTask && <AddTaskModal kids={kids} onSave={handleAddTask} onClose={() => setShowAddTask(false)} />}
       {showAddReward && <AddRewardModal onSave={handleAddReward} onClose={() => setShowAddReward(false)} />}
+      {showSettings && (
+        <SettingsModal
+          value={sleep}
+          onClose={() => setShowSettings(false)}
+          onSave={(v) => {
+            setSleep(v);
+            try {
+              localStorage.setItem("family_hub_sleep", JSON.stringify(v));
+            } catch {
+              // storage unavailable; setting lasts until reload
+            }
+            setShowSettings(false);
+          }}
+        />
+      )}
       {showPinModal && (
         <PinModal
           onClose={() => setShowPinModal(false)}

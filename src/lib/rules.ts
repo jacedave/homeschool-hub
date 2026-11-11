@@ -36,6 +36,26 @@ export function todayIn(timeZone: string, now = new Date()): { date: string; day
   };
 }
 
+/** The instant today began (midnight) in the given IANA timezone. */
+export function zonedStartOfDay(timeZone: string, now = new Date()): Date {
+  const { date } = todayIn(timeZone, now);
+  const [y, m, d] = date.split("-").map(Number);
+  const guess = Date.UTC(y, m - 1, d);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+  }).formatToParts(new Date(guess));
+  const g = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  const asUtc = Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second"));
+  return new Date(guess - (asUtc - guess));
+}
+
 export function poolTotal(rewardId: string, contribs: Contribution[]): number {
   return contribs.filter((c) => c.rewardId === rewardId).reduce((s, c) => s + c.amount, 0);
 }
@@ -61,4 +81,18 @@ export function validateDeposit(
     if (other) return "This reward can only be earned by one kid at a time.";
   }
   return null;
+}
+
+const toMinutes = (hhmm: string) => {
+  const [h, m] = hhmm.split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+};
+
+/** True when `now` falls in the sleep window. Handles windows that cross midnight (e.g. 21:00 to 06:30). */
+export function inSleepWindow(sleepAt: string, wakeAt: string, now = new Date()): boolean {
+  const cur = now.getHours() * 60 + now.getMinutes();
+  const s = toMinutes(sleepAt);
+  const w = toMinutes(wakeAt);
+  if (s === w) return false;
+  return s < w ? cur >= s && cur < w : cur >= s || cur < w;
 }
