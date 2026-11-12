@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ImageIcon, Search, X } from "lucide-react";
 
 const EMOJI = [
@@ -8,6 +8,21 @@ const EMOJI = [
   "🚲","🛴","⚽","🏀","🏊","🎢","🎡","🎪","🧸","🎲","🧩","🚀","🦖","🦄","🐶","🐱",
   "🏕️","🎣","🛝","🛍️","💵","📱","🎧","🍫","🧁","🥞","🍔","🌮","☕","🎂","🎈","🎉",
 ];
+
+interface EmojiData {
+  groups: string[];
+  emoji: [string, string, number][];
+}
+
+/** Kid-friendly words that don't appear in the official emoji names. */
+const SYNONYMS: Record<string, string[]> = {
+  movie: ["clapper", "film", "popcorn"], tv: ["television"], game: ["video game", "joystick", "game die"], bike: ["bicycle"],
+  swim: ["swimmer", "swimming"], dog: ["dog face", "puppy"], cat: ["cat face", "kitten"], clean: ["broom", "soap", "sponge", "bucket"],
+  dishes: ["fork", "plate", "cooking"], laundry: ["socks", "shirt", "jeans"], trash: ["wastebasket", "recycling"], homework: ["pencil", "memo", "books"],
+  read: ["book", "books"], teeth: ["tooth", "toothbrush"], bed: ["bed", "sleeping"], dress: ["shirt", "jeans", "dress"], feed: ["bone", "fish", "chicken"],
+  math: ["abacus", "heavy plus", "input numbers"], music: ["musical", "guitar", "piano", "saxophone", "violin"], art: ["artist palette", "paintbrush"],
+  science: ["microscope", "test tube", "telescope", "dna"], money: ["money", "dollar", "coin"], sleep: ["zzz", "sleeping", "crescent"], bath: ["bathtub", "shower"],
+};
 
 const SUGGESTIONS = ["ice cream", "movie night", "pizza", "video game", "playground", "swimming", "bike", "party", "toy", "book", "star", "trophy"];
 
@@ -29,6 +44,26 @@ export default function ImagePicker({ pin, imageUrl, emoji, onPickImage, onPickE
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<{ id: string; title: string; thumb: string; url: string }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [emojiQuery, setEmojiQuery] = useState("");
+  const [emojiGroup, setEmojiGroup] = useState<number | null>(null);
+  const [emojiData, setEmojiData] = useState<EmojiData | null>(null);
+
+  // The full emoji list (about 1,500) is only downloaded when the Emoji tab is first opened.
+  useEffect(() => {
+    if (tab === "emoji" && open && !emojiData) {
+      import("@/lib/emojiData.json").then((m) => setEmojiData(m.default as unknown as EmojiData));
+    }
+  }, [tab, open, emojiData]);
+
+  const emojiResults = useMemo(() => {
+    if (!emojiData) return [];
+    const words = emojiQuery.toLowerCase().split(/\s+/).filter(Boolean).flatMap((w) => [w, ...(SYNONYMS[w] || [])]);
+    const base = emojiData.emoji.filter(([, , g]) => emojiGroup === null || g === emojiGroup);
+    if (!words.length) return emojiGroup === null ? [] : base;
+    // Every typed word (or one of its synonyms) must appear in the emoji's name.
+    const typed = emojiQuery.toLowerCase().split(/\s+/).filter(Boolean);
+    return base.filter(([, name]) => typed.every((w) => [w, ...(SYNONYMS[w] || [])].some((alt) => name.includes(alt))));
+  }, [emojiData, emojiQuery, emojiGroup]);
   const [error, setError] = useState("");
 
   const search = async (q: string, kind = tab) => {
@@ -97,40 +132,65 @@ export default function ImagePicker({ pin, imageUrl, emoji, onPickImage, onPickE
           </div>
 
           {tab === "emoji" ? (
-            <div className="grid grid-cols-8 gap-1.5">
-              {EMOJI.map((e) => (
-                <button
-                  type="button"
-                  key={e}
-                  onClick={() => {
-                    onPickEmoji(e);
-                    setOpen(false);
-                  }}
-                  className="rounded-xl bg-white py-2 text-3xl active:scale-90"
-                >
-                  {e}
-                </button>
-              ))}
+            <div className="space-y-2.5">
+              <input
+                value={emojiQuery}
+                onChange={(e) => setEmojiQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && e.preventDefault()}
+                placeholder="Search emoji (e.g. pizza, dog, soccer)"
+                className="w-full rounded-xl border border-sky-100 bg-white px-3.5 py-3 text-slate-800"
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {(emojiData?.groups || ["Faces", "People", "Animals", "Food", "Activities", "Places", "Things", "Symbols"]).map((g, i) => (
+                  <button
+                    type="button"
+                    key={g}
+                    onClick={() => setEmojiGroup(emojiGroup === i ? null : i)}
+                    className={`rounded-full px-3.5 py-2 text-xs font-bold ${emojiGroup === i ? "bg-indigo-500 text-white" : "bg-white text-slate-600"}`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+              {!emojiQuery && emojiGroup === null && <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Popular</p>}
+              {emojiQuery && emojiResults.length === 0 && emojiData && <p className="text-sm text-slate-500">No emoji found. Try another word.</p>}
+              <div className="grid max-h-72 grid-cols-8 gap-1.5 overflow-y-auto">
+                {(!emojiQuery && emojiGroup === null ? EMOJI : emojiResults.slice(0, 160).map(([e]) => e)).map((e) => (
+                  <button
+                    type="button"
+                    key={e}
+                    onClick={() => {
+                      onPickEmoji(e);
+                      setOpen(false);
+                    }}
+                    className="rounded-xl bg-white py-2 text-3xl active:scale-90"
+                  >
+                    {e}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             <>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  search(query);
-                }}
-                className="flex gap-2"
-              >
+              {/* Not a <form>: this picker lives inside the task/reward form, and nested forms submit the outer one. */}
+              <div className="flex gap-2">
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      search(query);
+                    }
+                  }}
                   placeholder="Search (e.g. dinosaur, pizza)"
+                  enterKeyHint="search"
                   className="min-w-0 flex-1 rounded-xl border border-sky-100 bg-white px-3.5 py-3 text-slate-800"
                 />
-                <button type="submit" aria-label="Search" className="rounded-xl bg-indigo-500 px-4 text-white active:scale-95">
+                <button type="button" onClick={() => search(query)} aria-label="Search" className="rounded-xl bg-indigo-500 px-4 text-white active:scale-95">
                   <Search className="h-5 w-5" />
                 </button>
-              </form>
+              </div>
               <div className="flex flex-wrap gap-1.5">
                 {SUGGESTIONS.map((s) => (
                   <button type="button" key={s} onClick={() => search(s)} className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 active:bg-sky-100">

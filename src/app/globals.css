@@ -53,6 +53,10 @@ html.standalone .dock {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Fills across the bottom of a task while it is being held (shows the hold is working). */
+@keyframes hold-fill { from { width: 0; } to { width: 100%; } }
+.hold-bar { animation-name: hold-fill; animation-timing-function: linear; animation-fill-mode: forwards; }
+
 /* ---------- Celebration animations (CSS only, light on old iPads) ---------- */
 @keyframes cele-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes cele-pop {

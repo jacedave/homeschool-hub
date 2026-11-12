@@ -26,7 +26,7 @@ import { MealEditor, MealPlanner, MealDay } from "@/components/MealModals";
 import { AddRewardModal, AddTaskModal, NewReward, NewTask, PinModal } from "@/components/Modals";
 import { DEMO_CONTRIBUTIONS, DEMO_KIDS, DEMO_MEALS, DEMO_REWARDS, DEMO_SHOPPING, DEMO_TASKS } from "@/lib/demoData";
 import { mealFor } from "@/lib/dates";
-import { inSleepWindow, remainingCost, todayIn, validateDeposit } from "@/lib/rules";
+import { inSleepWindow, nextPriority, planTaskMove, remainingCost, todayIn, validateDeposit, type TaskPlacement } from "@/lib/rules";
 import { playVictorySound } from "@/lib/sound";
 import type {
   CalendarEvent,
@@ -234,7 +234,10 @@ export default function FamilyWallPlanner() {
     pendingRef.current++;
     queueRef.current = queueRef.current.then(async () => {
       try {
-        opts.onDone?.(await remote());
+        // Run the save first. (Writing `opts.onDone?.(await remote())` would skip the save whenever
+        // onDone is missing, because optional calls don't evaluate their arguments.)
+        const result = await remote();
+        opts.onDone?.(result);
       } catch (e) {
         console.error("Save failed:", opts.error, e);
         opts.revert();
@@ -272,10 +275,29 @@ export default function FamilyWallPlanner() {
     });
   };
 
+  /** Moves a task within a kid's list or to another kid. Press-and-hold a task to use it. */
+  const placeTask = (task: TaskItem, toKid: string, where: TaskPlacement) => {
+    const moves = planTaskMove(tasks, task.id, toKid, where);
+    if (!moves.length) return;
+    const byId = new Map(moves.map((m) => [m.id, m]));
+    const before = new Map(tasks.filter((t) => byId.has(t.id)).map((t) => [t.id, { priority: t.priority, assignee: t.assignee }]));
+
+    setTasks((p) => p.map((t) => (byId.has(t.id) ? { ...t, priority: byId.get(t.id)!.priority, assignee: byId.get(t.id)!.assignee ?? t.assignee } : t)));
+    if (toKid !== task.assignee) showNotice(`${task.title} moved to ${toKid}.`);
+    if (!isLiveMode) return;
+
+    save(() => hubPost({ action: "reorderTasks", items: moves.map((m) => ({ ...m, id: resolveId(m.id) })) }), {
+      error: "Couldn't move that task.",
+      revert: () => setTasks((p) => p.map((t) => (before.has(t.id) ? { ...t, ...before.get(t.id)! } : t))),
+    });
+  };
+
   const handleAddTask = (t: NewTask) => {
     setShowAddTask(false);
     const tempId = (isLiveMode ? "tmp-" : "demo-") + Date.now();
-    setTasks((p) => [...p, { ...t, id: tempId, completed: false, dueToday: true }]);
+    // New tasks go to the bottom of that kid's list, both now and after the next sync.
+    const priority = nextPriority(tasks, t.assignee);
+    setTasks((p) => [...p, { ...t, id: tempId, completed: false, dueToday: true, priority }]);
     if (!isLiveMode) return;
 
     save(
@@ -289,6 +311,7 @@ export default function FamilyWallPlanner() {
             Category: t.category,
             Points: t.points,
             Completed: false,
+            Priority: priority,
             Repeat: t.repeat.charAt(0).toUpperCase() + t.repeat.slice(1),
             RepeatDays: t.repeatDays.join(","),
             ...(t.imageUrl ? { Image: [{ url: t.imageUrl }] } : {}),
@@ -625,7 +648,7 @@ export default function FamilyWallPlanner() {
       </header>
 
       <main className="min-h-0 flex-1 overflow-hidden">
-        {activeTab === "tasks" && <TasksTab kids={kids} tasks={tasks} onToggle={toggleTask} />}
+        {activeTab === "tasks" && <TasksTab kids={kids} tasks={tasks} onToggle={toggleTask} onPlace={placeTask} />}
         {activeTab === "calendar" && <CalendarTab events={events} weather={weather} />}
         {activeTab === "rewards" && (
           <RewardsTab

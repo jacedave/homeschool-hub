@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unlock live mode to search pictures." }, { status: 401 });
   }
   if (!PIXABAY_KEY) {
-    return NextResponse.json({ error: "Picture search isn't set up yet. Add PIXABAY_API_KEY to the environment variables." }, { status: 501 });
+    return NextResponse.json({ error: "Picture search isn't set up yet. A parent needs to add a free Pixabay key (PIXABAY_API_KEY) to the app's settings." }, { status: 501 });
   }
 
   const q = (req.nextUrl.searchParams.get("q") || "").trim().slice(0, 100);

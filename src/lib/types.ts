@@ -24,6 +24,8 @@ export interface TaskItem {
   repeatDays: string[];
   lastCompletedDate?: string;
   imageUrl?: string;
+  /** Position in the kid's list: lower numbers come first. Tasks without one come before numbered ones. */
+  priority?: number;
   /** Emoji shown for the task and in its celebration when there is no picture. */
   icon?: string;
   /** False when a repeating task is not scheduled for today (hidden from the chart). */

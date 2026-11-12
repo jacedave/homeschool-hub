@@ -22,7 +22,7 @@ function isAuthorized(req: NextRequest) {
 }
 
 const tableUrl = (table: string) =>
-  `https://api.airtable.com/v0/${BASE_ID}/${encodeURIComponent(table)}`;
+  `${process.env.AIRTABLE_API_URL || "https://api.airtable.com"}/v0/${BASE_ID}/${encodeURIComponent(table)}`;
 
 const authHeaders = {
   Authorization: `Bearer ${AIRTABLE_TOKEN}`,
@@ -214,6 +214,7 @@ export async function GET(req: NextRequest) {
           lastCompletedDate: r.fields.LastCompletedDate ? String(r.fields.LastCompletedDate) : undefined,
           imageUrl: imageOf(r.fields),
           icon: r.fields.Icon ? String(r.fields.Icon) : undefined,
+          priority: r.fields.Priority === undefined ? undefined : Number(r.fields.Priority),
           dueToday: isDueOn(repeat, repeatDays, dayIndex),
         };
       }),
@@ -299,8 +300,32 @@ async function saveMeals(items: MealPayload[]) {
   return { ok: true, created };
 }
 
+interface TaskMovePayload {
+  id: string;
+  priority: number;
+  assignee?: string;
+}
+
+/** Reorders and/or reassigns several tasks in one go. */
+async function reorderTasks(items: TaskMovePayload[]) {
+  if (!Array.isArray(items) || items.length > 200) return { error: "Too many tasks at once." };
+  if (items.some((i) => typeof i.id !== "string" || !Number.isFinite(i.priority))) return { error: "Bad task data." };
+  const records = items.map((i) => ({ id: i.id, fields: { Priority: i.priority, ...(i.assignee ? { Assignee: i.assignee } : {}) } }));
+  try {
+    await patchMany("Tasks", records);
+  } catch (e) {
+    // Older bases spelled the field "Asignee".
+    if (e instanceof Error && /unknown field/i.test(e.message) && items.some((i) => i.assignee)) {
+      await patchMany("Tasks", items.map((i) => ({ id: i.id, fields: { Priority: i.priority, ...(i.assignee ? { Asignee: i.assignee } : {}) } })));
+    } else {
+      throw e;
+    }
+  }
+  return { ok: true };
+}
+
 interface PostBody {
-  items?: MealPayload[];
+  items?: MealPayload[] | TaskMovePayload[];
   action: string;
   table?: string;
   recordId?: string;
@@ -404,8 +429,12 @@ export async function POST(req: NextRequest) {
         if (!body.taskId) return fail("taskId required");
         return NextResponse.json(await completeTask(body.taskId, !!body.completed));
       }
+      case "reorderTasks": {
+        const result = await reorderTasks((body.items || []) as TaskMovePayload[]);
+        return "error" in result ? fail(result.error as string) : NextResponse.json(result);
+      }
       case "saveMeals": {
-        const result = await saveMeals(body.items || []);
+        const result = await saveMeals((body.items || []) as MealPayload[]);
         return "error" in result ? fail(result.error as string) : NextResponse.json(result);
       }
       case "deposit": {
