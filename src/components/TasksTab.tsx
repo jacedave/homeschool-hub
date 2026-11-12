@@ -66,6 +66,7 @@ export default function TasksTab({ kids, tasks, onToggle }: Props) {
                   )}
                   <div className="min-w-0 flex-1">
                     <p className={`text-[15px] font-semibold leading-snug ${task.completed ? "text-slate-500 line-through" : "text-slate-800"}`}>
+                      {task.icon && <span className="mr-1.5">{task.icon}</span>}
                       {task.title}
                     </p>
                     <div className="mt-1 flex items-center gap-2.5 text-[11px] font-medium uppercase tracking-wider text-slate-500">

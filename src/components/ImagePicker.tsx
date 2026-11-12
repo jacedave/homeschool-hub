@@ -13,20 +13,21 @@ const SUGGESTIONS = ["ice cream", "movie night", "pizza", "video game", "playgro
 
 interface Props {
   pin: string;
-  /** Currently chosen image URL, if any. */
+  /** Currently chosen picture URL, if any. */
   imageUrl?: string;
+  /** Currently chosen emoji, if any (shown when there is no picture). */
+  emoji?: string;
   onPickImage: (url: string) => void;
-  /** If provided, an Emoji tab is shown and the chosen emoji is reported here. */
-  onPickEmoji?: (emoji: string) => void;
+  onPickEmoji: (emoji: string) => void;
   onClear: () => void;
 }
 
-/** Search clip art / photos or pick an emoji instead of pasting a URL. */
-export default function ImagePicker({ pin, imageUrl, onPickImage, onPickEmoji, onClear }: Props) {
+/** Search clip art or photos (Pixabay), or pick an emoji instead. */
+export default function ImagePicker({ pin, imageUrl, emoji, onPickImage, onPickEmoji, onClear }: Props) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"clipart" | "photo" | "emoji">("clipart");
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<{ id: string; title: string; url: string }[]>([]);
+  const [results, setResults] = useState<{ id: string; title: string; thumb: string; url: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -51,8 +52,8 @@ export default function ImagePicker({ pin, imageUrl, onPickImage, onPickEmoji, o
     }
   };
 
-  const tabs: ["clipart" | "photo" | "emoji", string][] = [["clipart", "Clip art"], ["photo", "Photos"]];
-  if (onPickEmoji) tabs.push(["emoji", "Emoji"]);
+  const tabs: ["clipart" | "photo" | "emoji", string][] = [["clipart", "Clip art"], ["photo", "Photos"], ["emoji", "Emoji"]];
+  const hasChoice = !!imageUrl || !!emoji;
 
   return (
     <div className="rounded-2xl border border-sky-100 bg-sky-50 p-3">
@@ -60,13 +61,15 @@ export default function ImagePicker({ pin, imageUrl, onPickImage, onPickEmoji, o
         {imageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={imageUrl} alt="" className="h-14 w-14 rounded-xl object-cover" />
+        ) : emoji ? (
+          <span className="flex h-14 w-14 items-center justify-center rounded-xl bg-white text-4xl">{emoji}</span>
         ) : (
           <span className="flex h-14 w-14 items-center justify-center rounded-xl bg-white text-slate-400"><ImageIcon className="h-6 w-6" /></span>
         )}
         <button type="button" onClick={() => setOpen((o) => !o)} className="flex-1 rounded-xl bg-white py-3 text-sm font-bold text-indigo-600 shadow-sm active:scale-95">
-          {open ? "Close pictures" : imageUrl ? "Change picture" : "Choose a picture"}
+          {open ? "Close pictures" : hasChoice ? "Change picture" : "Choose a picture"}
         </button>
-        {imageUrl && (
+        {hasChoice && (
           <button type="button" onClick={onClear} aria-label="Remove picture" className="rounded-full p-2 text-slate-500 active:bg-sky-100">
             <X className="h-5 w-5" />
           </button>
@@ -100,7 +103,7 @@ export default function ImagePicker({ pin, imageUrl, onPickImage, onPickEmoji, o
                   type="button"
                   key={e}
                   onClick={() => {
-                    onPickEmoji?.(e);
+                    onPickEmoji(e);
                     setOpen(false);
                   }}
                   className="rounded-xl bg-white py-2 text-3xl active:scale-90"
@@ -137,6 +140,7 @@ export default function ImagePicker({ pin, imageUrl, onPickImage, onPickEmoji, o
               </div>
               {loading && <p className="text-sm text-slate-500">Searching…</p>}
               {error && <p className="text-sm font-medium text-rose-600">{error}</p>}
+              {results.length > 0 && <p className="text-xs text-slate-400">Pictures from Pixabay</p>}
               <div className="grid grid-cols-4 gap-2">
                 {results.map((r) => (
                   <button
@@ -149,7 +153,7 @@ export default function ImagePicker({ pin, imageUrl, onPickImage, onPickEmoji, o
                     className="aspect-square overflow-hidden rounded-xl bg-white active:scale-95"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={r.url} alt={r.title} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-cover" />
+                    <img src={r.thumb} alt={r.title} loading="lazy" referrerPolicy="no-referrer" className="h-full w-full object-cover" />
                   </button>
                 ))}
               </div>

@@ -29,15 +29,24 @@ const authHeaders = {
   "Content-Type": "application/json",
 };
 
+class AirtableError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+  }
+}
+
 async function airtable<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: authHeaders, cache: "no-store" });
-  const data = (await res.json()) as T & { error?: { message?: string } | string };
+  const data = (await res.json().catch(() => ({}))) as T & { error?: { message?: string } | string };
   if (!res.ok) {
     const err = data.error;
-    throw new Error(typeof err === "string" ? err : err?.message || `Airtable error ${res.status}`);
+    throw new AirtableError(typeof err === "string" ? err : err?.message || `Airtable error ${res.status}`, res.status);
   }
   return data;
 }
+
+/** True when a table simply doesn't exist (yet), as opposed to a temporary failure like a rate limit. */
+const isMissingTable = (e: unknown) => e instanceof AirtableError && (e.status === 404 || e.status === 403);
 
 async function fetchTable(table: string): Promise<AirtableRecord[]> {
   const all: AirtableRecord[] = [];
@@ -110,9 +119,18 @@ const assigneeOf = (f: Record<string, unknown>) => String(f.Assignee ?? f.Asigne
 async function fetchOptional(table: string): Promise<AirtableRecord[]> {
   try {
     return await fetchTable(table);
-  } catch {
-    return [];
+  } catch (e) {
+    if (isMissingTable(e)) return [];
+    throw e; // a temporary failure must not look like "no data" and wipe what the screen is showing
   }
+}
+
+/** Airtable-hosted picture from an "Image" attachment field, falling back to an older "ImageUrl" text field. */
+function imageOf(f: Record<string, unknown>): string | undefined {
+  const att = Array.isArray(f.Image) ? (f.Image[0] as { url?: string } | undefined) : undefined;
+  if (att?.url) return att.url;
+  const legacy = f.ImageUrl ?? f.ImageURL;
+  return legacy ? String(legacy) : undefined;
 }
 
 const toReward = (r: AirtableRecord): RewardItem => ({
@@ -120,25 +138,21 @@ const toReward = (r: AirtableRecord): RewardItem => ({
   title: String(r.fields.Title || ""),
   cost: Number(r.fields.Cost || 10),
   icon: String(r.fields.Icon || "🏆"),
-  imageUrl: r.fields.ImageUrl ? String(r.fields.ImageUrl) : undefined,
+  imageUrl: imageOf(r.fields),
   combinable: Boolean(r.fields.Combinable),
 });
 
 /** Unclaimed ledger rows. The Contributions table is optional until pooling is set up. */
 async function fetchContributions(): Promise<Contribution[]> {
-  try {
-    const rows = await fetchTable("Contributions");
-    return rows
-      .filter((r) => !r.fields.Claimed)
-      .map((r) => ({
-        id: r.id,
-        rewardId: String(r.fields.Reward || ""),
-        kidId: String(r.fields.Kid || ""),
-        amount: Number(r.fields.Amount || 0),
-      }));
-  } catch {
-    return [];
-  }
+  const rows = await fetchOptional("Contributions");
+  return rows
+    .filter((r) => !r.fields.Claimed)
+    .map((r) => ({
+      id: r.id,
+      rewardId: String(r.fields.Reward || ""),
+      kidId: String(r.fields.Kid || ""),
+      amount: Number(r.fields.Amount || 0),
+    }));
 }
 
 export async function GET(req: NextRequest) {
@@ -160,12 +174,18 @@ export async function GET(req: NextRequest) {
     const { date: today, dayIndex } = todayIn(TIME_ZONE);
 
     // Daily reset: repeating tasks completed on an earlier day become available again.
-    const toReset = tasks.filter(
-      (r) =>
-        r.fields.Completed &&
-        parseRepeat(r.fields.Repeat) !== "none" &&
-        String(r.fields.LastCompletedDate || "") < today
-    );
+    // A task that is checked off but has no completion date (for example ticked directly in Airtable)
+    // is treated as done today. It must not be reset straight away.
+    const repeatingDone = tasks.filter((r) => r.fields.Completed && parseRepeat(r.fields.Repeat) !== "none");
+    const undated = repeatingDone.filter((r) => !r.fields.LastCompletedDate);
+    if (undated.length) {
+      await patchMany(
+        "Tasks",
+        undated.map((r) => ({ id: r.id, fields: { LastCompletedDate: today } }))
+      );
+      undated.forEach((r) => (r.fields.LastCompletedDate = today));
+    }
+    const toReset = repeatingDone.filter((r) => String(r.fields.LastCompletedDate) < today);
     if (toReset.length) {
       await patchMany(
         "Tasks",
@@ -192,7 +212,8 @@ export async function GET(req: NextRequest) {
           repeat,
           repeatDays,
           lastCompletedDate: r.fields.LastCompletedDate ? String(r.fields.LastCompletedDate) : undefined,
-          imageUrl: r.fields.ImageUrl ? String(r.fields.ImageUrl) : undefined,
+          imageUrl: imageOf(r.fields),
+          icon: r.fields.Icon ? String(r.fields.Icon) : undefined,
           dueToday: isDueOn(repeat, repeatDays, dayIndex),
         };
       }),
@@ -211,6 +232,7 @@ export async function GET(req: NextRequest) {
         .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
       meals: meals.map((r) => ({
         id: r.id,
+        date: r.fields.Date ? String(r.fields.Date).slice(0, 10) : "",
         day: String(r.fields.Day || ""),
         breakfast: String(r.fields.Breakfast || ""),
         lunch: String(r.fields.Lunch || ""),
@@ -229,7 +251,56 @@ export async function GET(req: NextRequest) {
   }
 }
 
+interface MealPayload {
+  id?: string;
+  date: string;
+  breakfast?: string;
+  lunch?: string;
+  dinner?: string;
+}
+
+/** Creates, updates and deletes many days of meals at once (Airtable allows 10 records per request). */
+async function saveMeals(items: MealPayload[]) {
+  if (!Array.isArray(items) || items.length > 400) return { error: "Too many days at once." };
+  if (items.some((i) => !/^\d{4}-\d{2}-\d{2}$/.test(i.date))) return { error: "Bad date." };
+
+  const fieldsOf = (i: MealPayload) => ({
+    Date: i.date,
+    Breakfast: (i.breakfast || "").trim(),
+    Lunch: (i.lunch || "").trim(),
+    Dinner: (i.dinner || "").trim(),
+  });
+  const isEmpty = (i: MealPayload) => !fieldsOf(i).Breakfast && !fieldsOf(i).Lunch && !fieldsOf(i).Dinner;
+  const chunks = <T,>(list: T[]) => Array.from({ length: Math.ceil(list.length / 10) }, (_, n) => list.slice(n * 10, n * 10 + 10));
+
+  const creates = items.filter((i) => !i.id && !isEmpty(i));
+  const updates = items.filter((i) => i.id && !isEmpty(i));
+  const deletes = items.filter((i) => i.id && isEmpty(i));
+  const created: Record<string, string> = {};
+
+  for (const group of chunks(creates)) {
+    const res = await airtable<{ records: AirtableRecord[] }>(tableUrl("Meals"), {
+      method: "POST",
+      body: JSON.stringify({ records: group.map((i) => ({ fields: fieldsOf(i) })), typecast: true }),
+    });
+    res.records.forEach((r, n) => (created[group[n].date] = r.id));
+  }
+  for (const group of chunks(updates)) {
+    await airtable(tableUrl("Meals"), {
+      method: "PATCH",
+      body: JSON.stringify({ records: group.map((i) => ({ id: i.id, fields: fieldsOf(i) })), typecast: true }),
+    });
+  }
+  for (const group of chunks(deletes)) {
+    const qs = new URLSearchParams();
+    group.forEach((i) => qs.append("records[]", i.id as string));
+    await airtable(`${tableUrl("Meals")}?${qs.toString()}`, { method: "DELETE" });
+  }
+  return { ok: true, created };
+}
+
 interface PostBody {
+  items?: MealPayload[];
   action: string;
   table?: string;
   recordId?: string;
@@ -333,6 +404,10 @@ export async function POST(req: NextRequest) {
         if (!body.taskId) return fail("taskId required");
         return NextResponse.json(await completeTask(body.taskId, !!body.completed));
       }
+      case "saveMeals": {
+        const result = await saveMeals(body.items || []);
+        return "error" in result ? fail(result.error as string) : NextResponse.json(result);
+      }
       case "deposit": {
         if (!body.rewardId || !body.kidId) return fail("rewardId and kidId required");
         const result = await deposit(body.rewardId, body.kidId, Number(body.amount));
@@ -349,6 +424,18 @@ export async function POST(req: NextRequest) {
         if (!body.table || !WRITABLE_TABLES.includes(body.table)) return fail("Table not allowed");
         if (body.action === "create") {
           let fields = body.fields || {};
+          // Pictures are copied into Airtable from Pixabay only; ignore any other address.
+          if (Array.isArray(fields.Image)) {
+            const ok = (fields.Image as { url?: string }[]).filter((a) => {
+              try {
+                return new URL(a.url || "").hostname.endsWith("pixabay.com");
+              } catch {
+                return false;
+              }
+            });
+            fields = { ...fields, Image: ok.map((a) => ({ url: a.url })) };
+            if (!ok.length) delete fields.Image;
+          }
           if (body.table === "Tasks") {
             // The base uses "Task"/"Chore" category names and may spell the field "Asignee".
             fields = { ...fields, Category: fields.Category === "chore" ? "chore" : "task" };

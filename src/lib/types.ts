@@ -24,6 +24,8 @@ export interface TaskItem {
   repeatDays: string[];
   lastCompletedDate?: string;
   imageUrl?: string;
+  /** Emoji shown for the task and in its celebration when there is no picture. */
+  icon?: string;
   /** False when a repeating task is not scheduled for today (hidden from the chart). */
   dueToday: boolean;
 }
@@ -48,6 +50,9 @@ export interface Contribution {
 
 export interface MealItem {
   id: string;
+  /** "YYYY-MM-DD". Empty for an old weekday-only row, which acts as a weekly default. */
+  date: string;
+  /** Weekday name, only used by old weekday-only rows. */
   day: string;
   breakfast: string;
   lunch: string;

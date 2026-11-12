@@ -20,9 +20,12 @@ import RewardsTab from "@/components/RewardsTab";
 import { PhotoFrame, SleepScreen } from "@/components/Screensaver";
 import SettingsModal from "@/components/SettingsModal";
 import KidsManager from "@/components/KidsManager";
-import { CalendarTab, MealsTab, ShoppingTab } from "@/components/OtherTabs";
+import { CalendarTab, ShoppingTab } from "@/components/OtherTabs";
+import MealsTab from "@/components/MealsTab";
+import { MealEditor, MealPlanner, MealDay } from "@/components/MealModals";
 import { AddRewardModal, AddTaskModal, NewReward, NewTask, PinModal } from "@/components/Modals";
 import { DEMO_CONTRIBUTIONS, DEMO_KIDS, DEMO_MEALS, DEMO_REWARDS, DEMO_SHOPPING, DEMO_TASKS } from "@/lib/demoData";
+import { mealFor } from "@/lib/dates";
 import { inSleepWindow, remainingCost, todayIn, validateDeposit } from "@/lib/rules";
 import { playVictorySound } from "@/lib/sound";
 import type {
@@ -87,7 +90,8 @@ export default function FamilyWallPlanner() {
 
   const [currentTime, setCurrentTime] = useState("");
   const [currentDate, setCurrentDate] = useState("");
-  const [todayName, setTodayName] = useState("");
+  const [editMealDate, setEditMealDate] = useState<string | null>(null);
+  const [planMonth, setPlanMonth] = useState<string | null>(null);
   const [today, setToday] = useState("");
 
   const pinRef = useRef("");
@@ -102,7 +106,7 @@ export default function FamilyWallPlanner() {
 
   const showNotice = useCallback((msg: string) => {
     setNotice(msg);
-    setTimeout(() => setNotice(""), 4000);
+    setTimeout(() => setNotice(""), 8000);
   }, []);
 
   /** POST to the hub API. Throws with the server's message on failure. */
@@ -114,7 +118,7 @@ export default function FamilyWallPlanner() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Something went wrong.");
-    return data as { id?: string; claimed?: boolean; contributionId?: string; redemptionId?: string };
+    return data as { id?: string; claimed?: boolean; contributionId?: string; redemptionId?: string; created?: Record<string, string> };
   }, []);
 
   const fetchAllData = useCallback(async (activePin: string) => {
@@ -137,7 +141,9 @@ export default function FamilyWallPlanner() {
           if (hub.shopping) setShopping(hub.shopping);
           if (hub.redemptions) setRedemptions(hub.redemptions);
         }
-      } else {
+      } else if (hubRes.status === 401) {
+        // Only a rejected PIN means demo mode. A temporary server or Airtable error must not
+        // switch to demo mode, or later taps would silently stop saving.
         setIsLiveMode(false);
       }
 
@@ -181,7 +187,6 @@ export default function FamilyWallPlanner() {
       const tz = timeZone ? { timeZone } : {};
       setCurrentTime(now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", ...tz }));
       setCurrentDate(now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", ...tz }));
-      setTodayName(now.toLocaleDateString("en-US", { weekday: "long", ...tz }));
       setToday(timeZone ? todayIn(timeZone, now).date : localDate());
       setNowMs(now.getTime());
     };
@@ -231,8 +236,9 @@ export default function FamilyWallPlanner() {
       try {
         opts.onDone?.(await remote());
       } catch (e) {
+        console.error("Save failed:", opts.error, e);
         opts.revert();
-        showNotice(e instanceof Error && e.message ? e.message : opts.error);
+        showNotice(`${opts.error} ${e instanceof Error && e.message ? e.message : ""}`.trim());
       } finally {
         pendingRef.current--;
         if (pendingRef.current === 0) fetchAllData(pinRef.current); // quietly swap temporary ids for real ones
@@ -252,7 +258,7 @@ export default function FamilyWallPlanner() {
     setKids((p) => p.map((k) => (k.name === task.assignee ? { ...k, stars: k.stars + delta } : k)));
 
     if (completed) {
-      celebrate({ name: task.assignee, headline: "Awesome job!", title: task.title, points: task.points, icon: "⭐", imageUrl: task.imageUrl });
+      celebrate({ name: task.assignee, headline: "Awesome job!", title: task.title, points: task.points, icon: task.icon || "⭐", imageUrl: task.imageUrl });
     }
     if (!isLiveMode) return;
 
@@ -285,7 +291,8 @@ export default function FamilyWallPlanner() {
             Completed: false,
             Repeat: t.repeat.charAt(0).toUpperCase() + t.repeat.slice(1),
             RepeatDays: t.repeatDays.join(","),
-            ...(t.imageUrl ? { ImageUrl: t.imageUrl } : {}),
+            ...(t.imageUrl ? { Image: [{ url: t.imageUrl }] } : {}),
+            ...(t.icon ? { Icon: t.icon } : {}),
           },
         }),
       {
@@ -309,7 +316,7 @@ export default function FamilyWallPlanner() {
         hubPost({
           action: "create",
           table: "Rewards",
-          fields: { Title: r.title, Cost: r.cost, Icon: r.icon, Combinable: r.combinable, ...(r.imageUrl ? { ImageUrl: r.imageUrl } : {}) },
+          fields: { Title: r.title, Cost: r.cost, Icon: r.icon, Combinable: r.combinable, ...(r.imageUrl ? { Image: [{ url: r.imageUrl }] } : {}) },
         }),
       {
         error: "Couldn't add the reward.",
@@ -478,6 +485,50 @@ export default function FamilyWallPlanner() {
     });
   };
 
+  /* ---------------- Meals ---------------- */
+
+  /** Saves one or many days of meals. An all-blank day removes that day's meals. */
+  const saveMealDays = (items: MealDay[]) => {
+    setEditMealDate(null);
+    setPlanMonth(null);
+    const dates = new Set(items.map((i) => i.date));
+    const affected = (m: MealItem) => !!m.date && dates.has(m.date);
+    const previous = meals.filter(affected);
+    const isEmpty = (i: MealDay) => !i.breakfast.trim() && !i.lunch.trim() && !i.dinner.trim();
+    const idPrefix = isLiveMode ? "tmp-m-" : "demo-m-";
+
+    setMeals((p) => [
+      ...p.filter((m) => !affected(m)),
+      ...items
+        .filter((i) => !isEmpty(i))
+        .map((i) => ({
+          id: previous.find((m) => m.date === i.date)?.id ?? idPrefix + i.date,
+          date: i.date,
+          day: "",
+          breakfast: i.breakfast.trim(),
+          lunch: i.lunch.trim(),
+          dinner: i.dinner.trim(),
+        })),
+    ]);
+    if (!isLiveMode) return;
+
+    save(
+      () =>
+        hubPost({
+          action: "saveMeals",
+          items: items.map((i) => {
+            const old = previous.find((m) => m.date === i.date);
+            return { ...i, id: old ? resolveId(old.id) : undefined };
+          }),
+        }),
+      {
+        error: "Couldn't save the meals.",
+        onDone: (r) => Object.entries(r.created || {}).forEach(([date, id]) => (idMapRef.current[idPrefix + date] = id)),
+        revert: () => setMeals((p) => [...p.filter((m) => !affected(m)), ...previous]),
+      }
+    );
+  };
+
   /* ---------------- Shopping ---------------- */
 
   const handleAddShopping = (e: React.FormEvent) => {
@@ -505,7 +556,7 @@ export default function FamilyWallPlanner() {
     });
   };
 
-  const todaysMeal = meals.find((m) => m.day.toLowerCase() === todayName.toLowerCase()) || meals[0];
+  const todaysMeal = mealFor(meals, today);
   const sleeping = sleep.enabled && nowMs >= awakeUntil && inSleepWindow(sleep.sleepAt, sleep.wakeAt, new Date(nowMs));
   const currentTemp = weather?.current_weather?.temperature ? `${Math.round(weather.current_weather.temperature)}°F` : "";
 
@@ -588,7 +639,7 @@ export default function FamilyWallPlanner() {
             onFulfill={fulfill}
           />
         )}
-        {activeTab === "meals" && <MealsTab meals={meals} todayName={todayName} />}
+        {activeTab === "meals" && <MealsTab meals={meals} today={today} onEditDay={setEditMealDate} onPlan={setPlanMonth} />}
         {activeTab === "shopping" && (
           <ShoppingTab items={shopping} newItem={newShoppingItem} setNewItem={setNewShoppingItem} onAdd={handleAddShopping} onToggle={toggleShoppingItem} />
         )}
@@ -620,6 +671,8 @@ export default function FamilyWallPlanner() {
       </footer>
 
       {showAddTask && <AddTaskModal kids={kids} pin={pin} onSave={handleAddTask} onClose={() => setShowAddTask(false)} />}
+      {editMealDate && <MealEditor date={editMealDate} meals={meals} onSave={(d) => saveMealDays([d])} onClose={() => setEditMealDate(null)} />}
+      {planMonth && <MealPlanner month={planMonth} meals={meals} onSave={saveMealDays} onClose={() => setPlanMonth(null)} />}
       {showAddReward && <AddRewardModal pin={pin} onSave={handleAddReward} onClose={() => setShowAddReward(false)} />}
       {showKids && (
         <KidsManager

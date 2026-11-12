@@ -54,13 +54,13 @@ export const DEMO_CONTRIBUTIONS: Contribution[] = [
 ];
 
 export const DEMO_MEALS: MealItem[] = [
-  { id: "m1", day: "Monday", breakfast: "Oatmeal & Berries", lunch: "Turkey Wraps", dinner: "Taco Night" },
-  { id: "m2", day: "Tuesday", breakfast: "Scrambled Eggs", lunch: "Quesadillas", dinner: "Baked Ziti & Salad" },
-  { id: "m3", day: "Wednesday", breakfast: "Fresh Milled Pancakes", lunch: "Leftovers", dinner: "Slow Cooker Roast" },
-  { id: "m4", day: "Thursday", breakfast: "Yogurt & Granola", lunch: "Grilled Cheese", dinner: "Teriyaki Chicken Bowls" },
-  { id: "m5", day: "Friday", breakfast: "Bagels & Cream Cheese", lunch: "Picnic at the Park", dinner: "Homemade Pizza Night" },
-  { id: "m6", day: "Saturday", breakfast: "Waffles & Bacon", lunch: "Sandwiches", dinner: "Burgers on the Grill" },
-  { id: "m7", day: "Sunday", breakfast: "Cinnamon Rolls", lunch: "Sunday Roast", dinner: "Soup & Fresh Bread" },
+  { id: "m1", date: "", day: "Monday", breakfast: "Oatmeal & Berries", lunch: "Turkey Wraps", dinner: "Taco Night" },
+  { id: "m2", date: "", day: "Tuesday", breakfast: "Scrambled Eggs", lunch: "Quesadillas", dinner: "Baked Ziti & Salad" },
+  { id: "m3", date: "", day: "Wednesday", breakfast: "Fresh Milled Pancakes", lunch: "Leftovers", dinner: "Slow Cooker Roast" },
+  { id: "m4", date: "", day: "Thursday", breakfast: "Yogurt & Granola", lunch: "Grilled Cheese", dinner: "Teriyaki Chicken Bowls" },
+  { id: "m5", date: "", day: "Friday", breakfast: "Bagels & Cream Cheese", lunch: "Picnic at the Park", dinner: "Homemade Pizza Night" },
+  { id: "m6", date: "", day: "Saturday", breakfast: "Waffles & Bacon", lunch: "Sandwiches", dinner: "Burgers on the Grill" },
+  { id: "m7", date: "", day: "Sunday", breakfast: "Cinnamon Rolls", lunch: "Sunday Roast", dinner: "Soup & Fresh Bread" },
 ];
 
 export const DEMO_SHOPPING: ShoppingItem[] = [

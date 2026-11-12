@@ -2,7 +2,7 @@
 
 import React from "react";
 import { CheckCircle2, Circle } from "lucide-react";
-import type { CalendarEvent, MealItem, ShoppingItem, WeatherData } from "@/lib/types";
+import type { CalendarEvent, ShoppingItem, WeatherData } from "@/lib/types";
 
 const panel = "rounded-3xl border border-sky-100 bg-white shadow-sm p-5";
 
@@ -51,43 +51,6 @@ export function CalendarTab({ events, weather }: { events: CalendarEvent[]; weat
           ))}
         </div>
       </div>
-    </div>
-  );
-}
-
-export function MealsTab({ meals, todayName }: { meals: MealItem[]; todayName: string }) {
-  return (
-    <div className="grid h-full gap-2.5" style={{ gridTemplateColumns: `repeat(${Math.max(meals.length, 1)}, minmax(0, 1fr))` }}>
-      {meals.map((m) => {
-        const isToday = m.day.toLowerCase() === todayName.toLowerCase();
-        return (
-          <div
-            key={m.id}
-            className={`scroll-y rounded-3xl border p-3 ${isToday ? "border-emerald-400/70 bg-emerald-500/10" : "border-sky-100 bg-white shadow-sm"}`}
-          >
-            <h3 className={`mb-3 text-sm font-extrabold uppercase tracking-wider ${isToday ? "text-emerald-600" : "text-slate-600"}`}>
-              {m.day}
-            </h3>
-            <div className="space-y-2.5">
-              {(
-                [
-                  ["Breakfast", m.breakfast],
-                  ["Lunch", m.lunch],
-                ] as const
-              ).map(([label, value]) => (
-                <div key={label} className="rounded-2xl bg-sky-50 p-2.5">
-                  <span className="block text-[10px] uppercase tracking-wider text-slate-500">{label}</span>
-                  <p className="mt-0.5 text-xs font-semibold text-slate-800">{value}</p>
-                </div>
-              ))}
-              <div className="rounded-2xl bg-sky-50 p-2.5 ring-1 ring-emerald-400/30">
-                <span className="block text-[10px] uppercase tracking-wider text-emerald-600">Dinner</span>
-                <p className="mt-0.5 text-sm font-bold text-slate-800">{m.dinner}</p>
-              </div>
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }

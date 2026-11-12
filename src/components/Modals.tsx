@@ -33,6 +33,7 @@ export function AddTaskModal({ kids, pin, onSave, onClose }: { kids: Kid[]; pin:
   const [repeat, setRepeat] = useState<RepeatMode>("none");
   const [days, setDays] = useState<string[]>([]);
   const [imageUrl, setImageUrl] = useState("");
+  const [icon, setIcon] = useState("");
 
   const repeatOptions: [RepeatMode, string][] = [
     ["none", "Once"],
@@ -55,7 +56,8 @@ export function AddTaskModal({ kids, pin, onSave, onClose }: { kids: Kid[]; pin:
             points: Math.max(1, points),
             repeat,
             repeatDays: repeat === "custom" ? days : [],
-            imageUrl: imageUrl.trim() || undefined,
+            imageUrl: imageUrl || undefined,
+            icon: !imageUrl && icon ? icon : undefined,
           });
         }}
       >
@@ -112,8 +114,8 @@ export function AddTaskModal({ kids, pin, onSave, onClose }: { kids: Kid[]; pin:
         </div>
 
         <div>
-          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Celebration picture (optional)</p>
-          <ImagePicker pin={pin} imageUrl={imageUrl} onPickImage={setImageUrl} onClear={() => setImageUrl("")} />
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Picture or emoji (optional)</p>
+          <ImagePicker pin={pin} imageUrl={imageUrl} emoji={icon} onPickImage={(u) => { setImageUrl(u); setIcon(""); }} onPickEmoji={(e) => { setIcon(e); setImageUrl(""); }} onClear={() => { setImageUrl(""); setIcon(""); }} />
         </div>
 
         <button type="submit" className="w-full rounded-xl bg-indigo-500 py-3 text-sm font-bold text-white active:scale-95">Save Task</button>
@@ -138,7 +140,7 @@ export function AddRewardModal({ pin, onSave, onClose }: { pin: string; onSave: 
         onSubmit={(e) => {
           e.preventDefault();
           if (!title.trim()) return;
-          onSave({ title: title.trim(), cost: Math.max(1, cost), icon: icon || "🎁", imageUrl: imageUrl.trim() || undefined, combinable });
+          onSave({ title: title.trim(), cost: Math.max(1, cost), icon: icon || "🎁", imageUrl: imageUrl || undefined, combinable });
         }}
       >
         <input required autoFocus placeholder="Reward (e.g., Trip to the Trampoline Park)" value={title} onChange={(e) => setTitle(e.target.value)} className={input} />
@@ -146,12 +148,20 @@ export function AddRewardModal({ pin, onSave, onClose }: { pin: string; onSave: 
           <span className="text-sm text-slate-600">Cost (stars)</span>
           <input type="number" min={1} value={cost} onChange={(e) => setCost(Number(e.target.value))} className="w-20 bg-transparent text-right text-lg font-bold text-amber-600" />
         </div>
-        <div className="flex items-center gap-3">
-          {!imageUrl && <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-3xl">{icon}</span>}
-          <div className="min-w-0 flex-1">
-            <ImagePicker pin={pin} imageUrl={imageUrl} onPickImage={setImageUrl} onPickEmoji={(e) => { setIcon(e); setImageUrl(""); }} onClear={() => setImageUrl("")} />
-          </div>
-        </div>
+        <ImagePicker
+          pin={pin}
+          imageUrl={imageUrl}
+          emoji={icon}
+          onPickImage={setImageUrl}
+          onPickEmoji={(e) => {
+            setIcon(e);
+            setImageUrl("");
+          }}
+          onClear={() => {
+            setImageUrl("");
+            setIcon("🎁");
+          }}
+        />
 
         <div className="grid grid-cols-2 gap-2">
           {[
