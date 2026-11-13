@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authorizePin, lockedMessage } from "@/lib/auth";
 
-const FAMILY_PIN = process.env.FAMILY_PIN;
 const PIXABAY_KEY = process.env.PIXABAY_API_KEY;
 
 interface PixabayHit {
@@ -16,8 +16,9 @@ interface PixabayHit {
  * never depends on Pixabay's servers after that.
  */
 export async function GET(req: NextRequest) {
-  const pin = req.headers.get("x-family-pin");
-  if (!FAMILY_PIN || pin !== FAMILY_PIN) {
+  const auth = await authorizePin(req);
+  if (auth.status === "locked") return NextResponse.json({ error: lockedMessage(auth.minutes) }, { status: 429 });
+  if (auth.status !== "ok") {
     return NextResponse.json({ error: "Unlock live mode to search pictures." }, { status: 401 });
   }
   if (!PIXABAY_KEY) {

@@ -148,3 +148,13 @@ export function planTaskMove(tasks: TaskItem[], taskId: string, toKid: string, w
   });
   return moves;
 }
+
+/**
+ * Whether a task belongs on today's screen. Repeating tasks show on the days they are due. A one-off
+ * task shows until it is done, and stays for the rest of that day, then disappears the next day.
+ */
+export function isVisibleToday(task: TaskItem, today: string): boolean {
+  if (!task.dueToday) return false;
+  if (task.repeat === "none" && task.completed && task.lastCompletedDate && today && task.lastCompletedDate < today) return false;
+  return true;
+}

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Plus, Sparkles, Star, Users, X } from "lucide-react";
+import { Pencil, Plus, Sparkles, Star, Users, X } from "lucide-react";
 import Avatar from "./Avatar";
 import RewardTracker from "./RewardTracker";
 import { kidColor } from "@/lib/colors";
@@ -17,6 +17,8 @@ interface Props {
   onAddReward: () => void;
   redemptions: Redemption[];
   onFulfill: (r: Redemption) => void;
+  parentMode: boolean;
+  onEditReward: (r: RewardItem) => void;
 }
 
 const BANNERS = [
@@ -27,7 +29,7 @@ const BANNERS = [
   "from-purple-300 to-violet-400",
 ];
 
-export default function RewardsTab({ kids, rewards, contributions, onDeposit, onWithdraw, onAddReward, redemptions, onFulfill }: Props) {
+export default function RewardsTab({ kids, rewards, contributions, onDeposit, onWithdraw, onAddReward, redemptions, onFulfill, parentMode, onEditReward }: Props) {
   const [selected, setSelected] = useState<Record<string, string>>({});
   const [view, setView] = useState<"store" | "tracker">("store");
   const pending = redemptions.filter((r) => !r.fulfilled).length;
@@ -68,14 +70,19 @@ export default function RewardsTab({ kids, rewards, contributions, onDeposit, on
 
             return (
               <article key={r.id} className="overflow-hidden rounded-3xl border border-sky-100 bg-white shadow-md">
-                <div className={`flex items-center gap-4 bg-gradient-to-r ${BANNERS[idx % BANNERS.length]} p-4`}>
+                <div className={`relative flex items-center gap-4 bg-gradient-to-r ${BANNERS[idx % BANNERS.length]} p-4`}>
+                  {parentMode && (
+                    <button onClick={() => onEditReward(r)} aria-label={`Edit ${r.title}`} className="absolute right-3 top-3 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-indigo-600 shadow active:scale-90">
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                  )}
                   {r.imageUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={r.imageUrl} alt="" referrerPolicy="no-referrer" className="h-24 w-24 shrink-0 rounded-2xl border-4 border-white object-cover shadow-lg" />
                   ) : (
                     <span className="flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl border-4 border-white bg-white/80 text-6xl shadow-lg">{r.icon}</span>
                   )}
-                  <div className="min-w-0 flex-1">
+                  <div className={`min-w-0 flex-1 ${parentMode ? "pr-11" : ""}`}>
                     <h3 className="text-xl font-extrabold leading-tight text-white drop-shadow">{r.title}</h3>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-base font-extrabold text-amber-600">

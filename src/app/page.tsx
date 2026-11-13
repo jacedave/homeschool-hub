@@ -23,10 +23,10 @@ import KidsManager from "@/components/KidsManager";
 import { CalendarTab, ShoppingTab } from "@/components/OtherTabs";
 import MealsTab from "@/components/MealsTab";
 import { MealEditor, MealPlanner, MealDay } from "@/components/MealModals";
-import { AddRewardModal, AddTaskModal, NewReward, NewTask, PinModal } from "@/components/Modals";
+import { NewReward, NewTask, ParentPinModal, PinModal, RewardModal, TaskModal } from "@/components/Modals";
 import { DEMO_CONTRIBUTIONS, DEMO_KIDS, DEMO_MEALS, DEMO_REWARDS, DEMO_SHOPPING, DEMO_TASKS } from "@/lib/demoData";
 import { mealFor } from "@/lib/dates";
-import { inSleepWindow, nextPriority, planTaskMove, remainingCost, todayIn, validateDeposit, type TaskPlacement } from "@/lib/rules";
+import { inSleepWindow, nextPriority, planTaskMove, poolTotal, remainingCost, todayIn, validateDeposit, type TaskPlacement } from "@/lib/rules";
 import { playVictorySound } from "@/lib/sound";
 import type {
   CalendarEvent,
@@ -51,6 +51,12 @@ const NAV_TABS: { id: TabType; label: string; icon: React.ComponentType<{ classN
   { id: "shopping", label: "Groceries", icon: ShoppingCart },
 ];
 
+/** How long the parent lock stays open after the PIN is entered (it re-extends with each parent action). */
+const PARENT_MS = 5 * 60 * 1000;
+
+/** Where the demo-screen lockout is remembered on this device. */
+const GUARD_KEY = "family_hub_pin_guard";
+
 const localDate = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -63,6 +69,11 @@ export default function FamilyWallPlanner() {
   const [showPinModal, setShowPinModal] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
   const [showAddReward, setShowAddReward] = useState(false);
+  const [editTask, setEditTask] = useState<TaskItem | null>(null);
+  const [editReward, setEditReward] = useState<RewardItem | null>(null);
+  const [parentUntil, setParentUntil] = useState(0);
+  const [guard, setGuard] = useState({ lockedUntil: 0 });
+  const [pendingParent, setPendingParent] = useState<(() => void) | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showKids, setShowKids] = useState(false);
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
@@ -96,6 +107,7 @@ export default function FamilyWallPlanner() {
 
   const pinRef = useRef("");
   pinRef.current = pin;
+  const guardRef = useRef({ lockedUntil: 0 });
 
   // Optimistic-update bookkeeping: screens change instantly, saves run in order in the background.
   const seqRef = useRef(0); // bumps on every local change
@@ -121,6 +133,26 @@ export default function FamilyWallPlanner() {
     return data as { id?: string; claimed?: boolean; contributionId?: string; redemptionId?: string; created?: Record<string, string> };
   }, []);
 
+  /** The saved PIN stopped working (for example it was changed), so go back to demo until it is entered again. */
+  const forgetSavedPin = useCallback(() => {
+    try {
+      localStorage.removeItem("family_hub_pin");
+    } catch {
+      // ignore
+    }
+    setPin("");
+    pinRef.current = "";
+    setParentUntil(0);
+    setKids(DEMO_KIDS);
+    setTasks(DEMO_TASKS);
+    setRewards(DEMO_REWARDS);
+    setContributions(DEMO_CONTRIBUTIONS);
+    setMeals(DEMO_MEALS);
+    setShopping(DEMO_SHOPPING);
+    setRedemptions([]);
+    showNotice("The saved PIN no longer works. Tap the lock to enter it again.");
+  }, [showNotice]);
+
   const fetchAllData = useCallback(async (activePin: string) => {
     const startSeq = seqRef.current;
     try {
@@ -145,6 +177,9 @@ export default function FamilyWallPlanner() {
         // Only a rejected PIN means demo mode. A temporary server or Airtable error must not
         // switch to demo mode, or later taps would silently stop saving.
         setIsLiveMode(false);
+        const body = await hubRes.json().catch(() => ({}));
+        // The saved PIN is out of date: stop sending it (wrong tries are counted against this network).
+        if (body.reason === "wrong-pin" && activePin) forgetSavedPin();
       }
 
       if (extRes.ok) {
@@ -156,7 +191,7 @@ export default function FamilyWallPlanner() {
     } catch (err) {
       console.error("Sync error:", err);
     }
-  }, []);
+  }, [forgetSavedPin]);
 
   // Opened from the iPad home screen? Then there is no browser toolbar, so drop the extra bottom spacing.
   useEffect(() => {
@@ -173,6 +208,12 @@ export default function FamilyWallPlanner() {
     try {
       const saved = localStorage.getItem("family_hub_sleep");
       if (saved) setSleep(JSON.parse(saved));
+      const g = localStorage.getItem(GUARD_KEY);
+      if (g) {
+        const parsed = JSON.parse(g);
+        guardRef.current = parsed;
+        setGuard(parsed);
+      }
     } catch {
       // ignore corrupt or unavailable storage
     }
@@ -218,6 +259,77 @@ export default function FamilyWallPlanner() {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
     };
   }, [resetIdleTimer]);
+
+  /* ---------------- Parent lock ---------------- */
+
+  // In demo mode there is nothing to protect, so everything stays open.
+  const parentMode = !isLiveMode || nowMs < parentUntil;
+
+  /** Runs `fn` now if a parent has unlocked the app, otherwise asks for the family PIN first. */
+  const requireParent = (fn: () => void) => {
+    if (!isLiveMode) return fn();
+    if (Date.now() < parentUntil) {
+      setParentUntil(Date.now() + PARENT_MS);
+      return fn();
+    }
+    setPendingParent(() => fn);
+  };
+
+  /* Demo-screen PIN lockout. The server counts the wrong tries and enforces the lockout; this copy
+     just remembers it on the device so the screen can say so right away. */
+  const saveGuard = (g: { lockedUntil: number }) => {
+    guardRef.current = g;
+    setGuard(g);
+    try {
+      localStorage.setItem(GUARD_KEY, JSON.stringify(g));
+    } catch {
+      // storage unavailable: the server still enforces the lockout
+    }
+  };
+
+  /** Checks a PIN typed on the demo screen with the server. Three wrong tries lock it out for a while. */
+  const connectWithPin = async (value: string): Promise<{ status: "ok" | "wrong" | "locked" | "error"; triesLeft?: number }> => {
+    if (guardRef.current.lockedUntil > Date.now()) return { status: "locked" };
+    try {
+      const res = await fetch("/api/unlock", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: value }) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        try {
+          localStorage.setItem("family_hub_pin", value);
+        } catch {
+          // ignore
+        }
+        saveGuard({ lockedUntil: 0 });
+        setPin(value);
+        pinRef.current = value;
+        fetchAllData(value);
+        return { status: "ok" };
+      }
+      if (res.status === 429) {
+        saveGuard({ lockedUntil: Date.now() + (Number(data.minutes) || 15) * 60000 });
+        return { status: "locked" };
+      }
+      if (res.status === 401) return { status: "wrong", triesLeft: data.triesLeft };
+      return { status: "error" };
+    } catch {
+      return { status: "error" };
+    }
+  };
+
+  /** Parent unlock: just checks the PIN already on this device. There is no try limit. */
+  const unlockParent = (entered: string) => {
+    if (!pinRef.current || entered !== pinRef.current) return false;
+    setParentUntil(Date.now() + PARENT_MS);
+    const fn = pendingParent;
+    setPendingParent(null);
+    fn?.();
+    return true;
+  };
+
+  // Lock again whenever the photo frame or sleep screen takes over.
+  useEffect(() => {
+    if (screensaverActive) setParentUntil(0);
+  }, [screensaverActive]);
 
   const closeCelebration = useCallback(() => setCelebration(null), []);
   const celebrate = (data: CelebrationData) => {
@@ -292,9 +404,15 @@ export default function FamilyWallPlanner() {
     });
   };
 
-  const handleAddTask = (t: NewTask) => {
+  /** Adds the task for each chosen child (one copy per child). */
+  const handleAddTask = (t: NewTask, assignees: string[]) => {
     setShowAddTask(false);
-    const tempId = (isLiveMode ? "tmp-" : "demo-") + Date.now();
+    assignees.forEach((who, i) => addTaskFor({ ...t, assignee: who }, i));
+    if (assignees.length > 1) showNotice(`Added "${t.title}" for ${assignees.join(", ")}.`);
+  };
+
+  const addTaskFor = (t: NewTask, copyIndex: number) => {
+    const tempId = (isLiveMode ? "tmp-" : "demo-") + Date.now() + "-" + copyIndex;
     // New tasks go to the bottom of that kid's list, both now and after the next sync.
     const priority = nextPriority(tasks, t.assignee);
     setTasks((p) => [...p, { ...t, id: tempId, completed: false, dueToday: true, priority }]);
@@ -326,6 +444,52 @@ export default function FamilyWallPlanner() {
     );
   };
 
+  const handleEditTask = (task: TaskItem, t: NewTask, imageChanged: boolean) => {
+    setEditTask(null);
+    const assigneeChanged = t.assignee !== task.assignee;
+    // Giving a task to someone else puts it at the bottom of their list.
+    const priority = assigneeChanged ? nextPriority(tasks, t.assignee) : task.priority;
+    setTasks((p) => p.map((x) => (x.id === task.id ? { ...x, ...t, priority } : x)));
+    if (!isLiveMode) return;
+
+    save(
+      () =>
+        hubPost({
+          action: "update",
+          table: "Tasks",
+          recordId: resolveId(task.id),
+          fields: {
+            Title: t.title,
+            Assignee: t.assignee,
+            Category: t.category,
+            Points: t.points,
+            Repeat: t.repeat.charAt(0).toUpperCase() + t.repeat.slice(1),
+            RepeatDays: t.repeatDays.join(","),
+            Icon: t.icon ?? "",
+            ...(assigneeChanged ? { Priority: priority } : {}),
+            ...(imageChanged ? { Image: t.imageUrl ? [{ url: t.imageUrl }] : [] } : {}),
+          },
+        }),
+      { error: "Couldn't save the task.", revert: () => setTasks((p) => p.map((x) => (x.id === task.id ? task : x))) }
+    );
+  };
+
+  const handleDeleteTask = (task: TaskItem) => {
+    setEditTask(null);
+    const index = tasks.findIndex((x) => x.id === task.id);
+    setTasks((p) => p.filter((x) => x.id !== task.id));
+    if (!isLiveMode) return;
+    save(() => hubPost({ action: "delete", table: "Tasks", recordId: resolveId(task.id) }), {
+      error: "Couldn't delete the task.",
+      revert: () =>
+        setTasks((p) => {
+          const next = [...p];
+          next.splice(Math.min(index, next.length), 0, task);
+          return next;
+        }),
+    });
+  };
+
   /* ---------------- Rewards ---------------- */
 
   const handleAddReward = (r: NewReward) => {
@@ -347,6 +511,62 @@ export default function FamilyWallPlanner() {
         revert: () => setRewards((p) => p.filter((x) => x.id !== tempId)),
       }
     );
+  };
+
+  /** Stars already saved toward a reward: everyone's together for shared ones, the biggest single jar for solo ones. */
+  const savedToward = (reward: RewardItem, asCombinable: boolean) => {
+    const jar = contributions.filter((c) => c.rewardId === reward.id);
+    if (asCombinable) return jar.reduce((s, c) => s + c.amount, 0);
+    return Math.max(0, ...kids.map((k) => poolTotal(reward.id, jar, k.id)));
+  };
+
+  const handleEditReward = (reward: RewardItem, r: NewReward, imageChanged: boolean) => {
+    const hasSaved = contributions.some((c) => c.rewardId === reward.id);
+    if (hasSaved && r.combinable !== reward.combinable) {
+      return showNotice("Take back the stars saved toward this reward before switching between Shared and Solo.");
+    }
+    if (hasSaved && savedToward(reward, r.combinable) > r.cost) {
+      return showNotice(`${savedToward(reward, r.combinable)} stars are already saved toward this. Take some back before lowering the cost.`);
+    }
+    setEditReward(null);
+    setRewards((p) => p.map((x) => (x.id === reward.id ? { ...x, ...r } : x)));
+    if (!isLiveMode) return;
+
+    save(
+      () =>
+        hubPost({
+          action: "update",
+          table: "Rewards",
+          recordId: resolveId(reward.id),
+          fields: {
+            Title: r.title,
+            Cost: r.cost,
+            Icon: r.icon,
+            Combinable: r.combinable,
+            ...(imageChanged ? { Image: r.imageUrl ? [{ url: r.imageUrl }] : [] } : {}),
+          },
+        }),
+      { error: "Couldn't save the reward.", revert: () => setRewards((p) => p.map((x) => (x.id === reward.id ? reward : x))) }
+    );
+  };
+
+  const handleDeleteReward = (reward: RewardItem) => {
+    if (contributions.some((c) => c.rewardId === reward.id)) {
+      return showNotice("Someone has stars saved toward this reward. Take those back before deleting it.");
+    }
+    setEditReward(null);
+    const index = rewards.findIndex((x) => x.id === reward.id);
+    setRewards((p) => p.filter((x) => x.id !== reward.id));
+    if (!isLiveMode) return;
+    save(() => hubPost({ action: "delete", table: "Rewards", recordId: resolveId(reward.id) }), {
+      error: "Couldn't delete the reward.",
+      revert: () =>
+        setRewards((p) => {
+          const next = [...p];
+          next.splice(Math.min(index, next.length), 0, reward);
+          return next;
+        }),
+    });
   };
 
   const deposit = (kid: Kid, reward: RewardItem, amount: number) => {
@@ -607,11 +827,16 @@ export default function FamilyWallPlanner() {
       <header className="mb-3 flex shrink-0 items-center justify-between rounded-2xl bg-white shadow-sm px-4 py-2.5">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => setShowPinModal(true)}
-            className={`rounded-xl p-2 ${isLiveMode ? "bg-emerald-500/15 text-emerald-600" : "bg-amber-500/15 text-amber-600"}`}
-            title={isLiveMode ? "Live family mode" : "Demo mode — tap to enter PIN"}
+            onClick={() => {
+              if (!isLiveMode) setShowPinModal(true); // demo mode: connect with the PIN
+              else if (parentMode) setParentUntil(0); // lock now
+              else setPendingParent(() => () => {}); // ask for the PIN
+            }}
+            className={`flex items-center gap-1.5 rounded-xl p-2 ${isLiveMode && parentMode ? "bg-emerald-500/15 text-emerald-600" : "bg-amber-500/15 text-amber-600"}`}
+            title={!isLiveMode ? "Demo mode — tap to enter PIN" : parentMode ? "Parent mode is on. Tap to lock." : "Locked. Tap to enter the PIN."}
           >
-            {isLiveMode ? <Unlock className="h-5 w-5" /> : <Lock className="h-5 w-5" />}
+            {isLiveMode && parentMode ? <Unlock className="h-5 w-5" /> : <Lock className="h-5 w-5" />}
+            {isLiveMode && <span className="pr-1 text-xs font-bold">{parentMode ? "Parent mode" : "Parents"}</span>}
           </button>
           <div>
             <h1 className="text-lg font-bold leading-tight">{isLiveMode ? "Family Hub" : "Family Hub (Demo)"}</h1>
@@ -640,7 +865,7 @@ export default function FamilyWallPlanner() {
             className="flex items-center gap-1.5 rounded-xl bg-sky-100 px-3 py-1.5 text-xs font-medium text-slate-700 active:bg-sky-200">
             <ImageIcon className="h-4 w-4 text-pink-600" /> Photos
           </button>
-          <button onClick={() => setShowSettings(true)} aria-label="Settings" className="rounded-xl bg-sky-100 p-2 text-slate-700 active:bg-sky-200">
+          <button onClick={() => requireParent(() => setShowSettings(true))} aria-label="Settings" className="rounded-xl bg-sky-100 p-2 text-slate-700 active:bg-sky-200">
             <Settings className="h-5 w-5" />
           </button>
           <div className="text-xl font-bold tabular-nums text-slate-800">{currentTime}</div>
@@ -648,7 +873,17 @@ export default function FamilyWallPlanner() {
       </header>
 
       <main className="min-h-0 flex-1 overflow-hidden">
-        {activeTab === "tasks" && <TasksTab kids={kids} tasks={tasks} onToggle={toggleTask} onPlace={placeTask} />}
+        {activeTab === "tasks" && (
+          <TasksTab
+            kids={kids}
+            tasks={tasks}
+            today={today}
+            onToggle={toggleTask}
+            onPlace={(task, toKid, where) => requireParent(() => placeTask(task, toKid, where))}
+            parentMode={parentMode}
+            onEdit={(task) => requireParent(() => setEditTask(task))}
+          />
+        )}
         {activeTab === "calendar" && <CalendarTab events={events} weather={weather} />}
         {activeTab === "rewards" && (
           <RewardsTab
@@ -657,12 +892,14 @@ export default function FamilyWallPlanner() {
             contributions={contributions}
             onDeposit={deposit}
             onWithdraw={withdraw}
-            onAddReward={() => setShowAddReward(true)}
+            onAddReward={() => requireParent(() => setShowAddReward(true))}
             redemptions={redemptions}
-            onFulfill={fulfill}
+            onFulfill={(r) => requireParent(() => fulfill(r))}
+            parentMode={parentMode}
+            onEditReward={(r) => requireParent(() => setEditReward(r))}
           />
         )}
-        {activeTab === "meals" && <MealsTab meals={meals} today={today} onEditDay={setEditMealDate} onPlan={setPlanMonth} />}
+        {activeTab === "meals" && <MealsTab meals={meals} today={today} onEditDay={(d) => requireParent(() => setEditMealDate(d))} onPlan={(m) => requireParent(() => setPlanMonth(m))} />}
         {activeTab === "shopping" && (
           <ShoppingTab items={shopping} newItem={newShoppingItem} setNewItem={setNewShoppingItem} onAdd={handleAddShopping} onToggle={toggleShoppingItem} />
         )}
@@ -688,15 +925,42 @@ export default function FamilyWallPlanner() {
             );
           })}
         </nav>
-        <button onClick={() => setShowAddTask(true)} className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 active:scale-95">
+        <button onClick={() => requireParent(() => setShowAddTask(true))} className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 active:scale-95">
           <Plus className="h-4 w-4" /> Add Task
         </button>
       </footer>
 
-      {showAddTask && <AddTaskModal kids={kids} pin={pin} onSave={handleAddTask} onClose={() => setShowAddTask(false)} />}
+      {showAddTask && <TaskModal kids={kids} pin={pin} onSave={(t, _imageChanged, who) => handleAddTask(t, who)} onClose={() => setShowAddTask(false)} />}
+      {editTask && (
+        <TaskModal
+          kids={kids}
+          pin={pin}
+          task={editTask}
+          onSave={(t, imageChanged) => handleEditTask(editTask, t, imageChanged)}
+          onDelete={() => handleDeleteTask(editTask)}
+          onClose={() => setEditTask(null)}
+        />
+      )}
       {editMealDate && <MealEditor date={editMealDate} meals={meals} onSave={(d) => saveMealDays([d])} onClose={() => setEditMealDate(null)} />}
       {planMonth && <MealPlanner month={planMonth} meals={meals} onSave={saveMealDays} onClose={() => setPlanMonth(null)} />}
-      {showAddReward && <AddRewardModal pin={pin} onSave={handleAddReward} onClose={() => setShowAddReward(false)} />}
+      {showAddReward && <RewardModal pin={pin} onSave={(r) => handleAddReward(r)} onClose={() => setShowAddReward(false)} />}
+      {editReward && (
+        <RewardModal
+          pin={pin}
+          reward={editReward}
+          onSave={(r, imageChanged) => handleEditReward(editReward, r, imageChanged)}
+          onDelete={() => handleDeleteReward(editReward)}
+          onClose={() => setEditReward(null)}
+        />
+      )}
+      {pendingParent && (
+        <ParentPinModal
+          expectedLength={/^\d+$/.test(pin) ? pin.length : 0}
+          numeric={/^\d+$/.test(pin)}
+          onSubmit={unlockParent}
+          onClose={() => setPendingParent(null)}
+        />
+      )}
       {showKids && (
         <KidsManager
           kids={kids}
@@ -731,13 +995,8 @@ export default function FamilyWallPlanner() {
       {showPinModal && (
         <PinModal
           onClose={() => setShowPinModal(false)}
-          onSave={(value) => {
-            localStorage.setItem("family_hub_pin", value);
-            setPin(value);
-            pinRef.current = value;
-            setShowPinModal(false);
-            fetchAllData(value);
-          }}
+          onTry={connectWithPin}
+          lockedMinutes={guard.lockedUntil > nowMs ? Math.max(1, Math.round((guard.lockedUntil - Date.now()) / 60000)) : 0}
         />
       )}
     </div>

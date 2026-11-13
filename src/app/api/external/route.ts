@@ -1,17 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as ical from "node-ical";
 import { FAMILY_TZ } from "@/lib/config";
+import { authorizePin, lockedMessage } from "@/lib/auth";
 import { expandEvents, ExpandedEvent } from "@/lib/icalExpand";
 import { zonedStartOfDay } from "@/lib/rules";
 
-const FAMILY_PIN = process.env.FAMILY_PIN;
-
-/** Google Photos escapes characters inside the page's JSON, e.g. "=" for "=". */
+/** Google Photos escapes characters inside the page's JSON, e.g. \\u003d for "=". */
 const unescapeUrl = (s: string) => s.replace(/\\u003d/g, "=").replace(/\\u0026/g, "&").replace(/\\\//g, "/");
 
 export async function GET(req: NextRequest) {
-  const pin = req.headers.get("x-family-pin");
-  const isAuth = !!FAMILY_PIN && pin === FAMILY_PIN;
+  const auth = await authorizePin(req);
+  if (auth.status === "locked") return NextResponse.json({ error: lockedMessage(auth.minutes) }, { status: 429 });
+  const isAuth = auth.status === "ok";
 
   const lat = process.env.WEATHER_LAT || "37.0965";
   const lon = process.env.WEATHER_LON || "-113.5684";

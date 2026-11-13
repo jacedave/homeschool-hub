@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isDueOn, parseRepeat, parseRepeatDays, todayIn, validateDeposit } from "@/lib/rules";
 import { FAMILY_TZ } from "@/lib/config";
+import { authorizePin, lockedMessage } from "@/lib/auth";
 import { COLOR_MAP } from "@/lib/colors";
 import type { Contribution, Kid, RewardItem } from "@/lib/types";
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 const BASE_ID = process.env.AIRTABLE_BASE_ID;
-const FAMILY_PIN = process.env.FAMILY_PIN;
 const TIME_ZONE = FAMILY_TZ;
 
 const WRITABLE_TABLES = ["Kids", "Tasks", "Rewards", "Meals", "Shopping", "Redemptions"];
@@ -16,9 +16,13 @@ interface AirtableRecord {
   fields: Record<string, unknown>;
 }
 
-function isAuthorized(req: NextRequest) {
-  const pin = req.headers.get("x-family-pin");
-  return !!FAMILY_PIN && pin === FAMILY_PIN && !!AIRTABLE_TOKEN && !!BASE_ID;
+/** Returns an error response if the request isn't allowed to see the family's data, otherwise null. */
+async function denied(req: NextRequest): Promise<NextResponse | null> {
+  const auth = await authorizePin(req);
+  if (auth.status === "ok") return null;
+  if (auth.status === "locked") return NextResponse.json({ error: lockedMessage(auth.minutes) }, { status: 429 });
+  // "wrong" lets the app know its saved PIN is out of date, so it stops sending it.
+  return NextResponse.json({ mode: "demo", reason: auth.status === "wrong" ? "wrong-pin" : undefined }, { status: 401 });
 }
 
 const tableUrl = (table: string) =>
@@ -156,9 +160,8 @@ async function fetchContributions(): Promise<Contribution[]> {
 }
 
 export async function GET(req: NextRequest) {
-  if (!isAuthorized(req)) {
-    return NextResponse.json({ mode: "demo" }, { status: 401 });
-  }
+  const blocked = await denied(req);
+  if (blocked) return blocked;
 
   try {
     const [kids, tasks, rewards, meals, shopping, contributions, redemptionRows] = await Promise.all([
@@ -173,11 +176,13 @@ export async function GET(req: NextRequest) {
 
     const { date: today, dayIndex } = todayIn(TIME_ZONE);
 
-    // Daily reset: repeating tasks completed on an earlier day become available again.
+    // Daily reset: repeating tasks completed on an earlier day become available again. One-off tasks
+    // completed on an earlier day simply stop showing on the Today screen (the app hides them).
     // A task that is checked off but has no completion date (for example ticked directly in Airtable)
-    // is treated as done today. It must not be reset straight away.
-    const repeatingDone = tasks.filter((r) => r.fields.Completed && parseRepeat(r.fields.Repeat) !== "none");
-    const undated = repeatingDone.filter((r) => !r.fields.LastCompletedDate);
+    // is treated as done today. It must not be reset or hidden straight away.
+    const allDone = tasks.filter((r) => r.fields.Completed);
+    const repeatingDone = allDone.filter((r) => parseRepeat(r.fields.Repeat) !== "none");
+    const undated = allDone.filter((r) => !r.fields.LastCompletedDate);
     if (undated.length) {
       await patchMany(
         "Tasks",
@@ -338,6 +343,28 @@ interface PostBody {
   contributionId?: string;
 }
 
+/**
+ * Tidies fields before they are written. Pictures are copied into Airtable from Pixabay only, so any
+ * other address is dropped; an empty list clears the picture. Task categories are saved as "school" or "chore"
+ * (older rows that say "task" are still read as schoolwork).
+ */
+function cleanFields(table: string, input: Record<string, unknown>): Record<string, unknown> {
+  const fields = { ...input };
+  if (Array.isArray(fields.Image)) {
+    const ok = (fields.Image as { url?: string }[]).filter((a) => {
+      try {
+        return new URL(a.url || "").hostname.endsWith("pixabay.com");
+      } catch {
+        return false;
+      }
+    });
+    if (ok.length || fields.Image.length === 0) fields.Image = ok.map((a) => ({ url: a.url }));
+    else delete fields.Image;
+  }
+  if (table === "Tasks" && "Category" in fields) fields.Category = fields.Category === "chore" ? "chore" : "school";
+  return fields;
+}
+
 const fail = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
 async function completeTask(taskId: string, completed: boolean) {
@@ -417,9 +444,8 @@ async function withdraw(contributionId: string) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!isAuthorized(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const blocked = await denied(req);
+  if (blocked) return blocked;
 
   const body = (await req.json()) as PostBody;
 
@@ -451,39 +477,23 @@ export async function POST(req: NextRequest) {
       case "update":
       case "delete": {
         if (!body.table || !WRITABLE_TABLES.includes(body.table)) return fail("Table not allowed");
-        if (body.action === "create") {
-          let fields = body.fields || {};
-          // Pictures are copied into Airtable from Pixabay only; ignore any other address.
-          if (Array.isArray(fields.Image)) {
-            const ok = (fields.Image as { url?: string }[]).filter((a) => {
-              try {
-                return new URL(a.url || "").hostname.endsWith("pixabay.com");
-              } catch {
-                return false;
-              }
-            });
-            fields = { ...fields, Image: ok.map((a) => ({ url: a.url })) };
-            if (!ok.length) delete fields.Image;
-          }
-          if (body.table === "Tasks") {
-            // The base uses "Task"/"Chore" category names and may spell the field "Asignee".
-            fields = { ...fields, Category: fields.Category === "chore" ? "chore" : "task" };
-            try {
-              return NextResponse.json(await createRecord("Tasks", fields));
-            } catch (e) {
-              if (e instanceof Error && /unknown field/i.test(e.message) && "Assignee" in fields) {
-                const { Assignee, ...rest } = fields;
-                return NextResponse.json(await createRecord("Tasks", { ...rest, Asignee: Assignee }));
-              }
-              throw e;
+        if (body.action === "create" || body.action === "update") {
+          const fields = cleanFields(body.table, body.fields || {});
+          const write = (f: Record<string, unknown>) =>
+            body.action === "create" ? createRecord(body.table as string, f) : patchRecord(body.table as string, body.recordId as string, f);
+          if (body.action === "update" && !body.recordId) return fail("recordId required");
+          try {
+            return NextResponse.json(await write(fields));
+          } catch (e) {
+            // Older bases spelled the field "Asignee".
+            if (body.table === "Tasks" && "Assignee" in fields && e instanceof Error && /unknown field/i.test(e.message)) {
+              const { Assignee, ...rest } = fields;
+              return NextResponse.json(await write({ ...rest, Asignee: Assignee }));
             }
+            throw e;
           }
-          return NextResponse.json(await createRecord(body.table, fields));
         }
         if (!body.recordId) return fail("recordId required");
-        if (body.action === "update") {
-          return NextResponse.json(await patchRecord(body.table, body.recordId, body.fields || {}));
-        }
         return NextResponse.json(await deleteRecord(body.table, body.recordId));
       }
       default:

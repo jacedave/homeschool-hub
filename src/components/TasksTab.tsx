@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useRef, useState } from "react";
-import { ArrowUpToLine, BookOpen, CheckCircle2, Circle, Repeat, Sparkles, Star, X } from "lucide-react";
+import { ArrowUpToLine, BookOpen, CheckCircle2, Circle, Pencil, Repeat, Sparkles, Star, X } from "lucide-react";
 import Avatar from "./Avatar";
 import { kidColor } from "@/lib/colors";
-import { sortedKidTasks, type TaskPlacement } from "@/lib/rules";
+import { isVisibleToday, sortedKidTasks, type TaskPlacement } from "@/lib/rules";
 import type { Kid, TaskItem } from "@/lib/types";
 
 /** How long to press and hold a task before it can be moved. */
@@ -15,6 +15,10 @@ interface Props {
   tasks: TaskItem[];
   onToggle: (task: TaskItem) => void;
   onPlace: (task: TaskItem, toKid: string, where: TaskPlacement) => void;
+  today: string;
+  /** True while a parent has unlocked the app: shows the edit buttons. */
+  parentMode: boolean;
+  onEdit: (task: TaskItem) => void;
 }
 
 interface DragState {
@@ -46,7 +50,7 @@ function TaskPicture({ task, size = 96 }: { task: TaskItem; size?: number }) {
   return null;
 }
 
-export default function TasksTab({ kids, tasks, onToggle, onPlace }: Props) {
+export default function TasksTab({ kids, tasks, onToggle, onPlace, today, parentMode, onEdit }: Props) {
   const [drag, setDrag] = useState<DragState | null>(null);
   const [hover, setHover] = useState<Hover>({});
   const [holdingId, setHoldingId] = useState<string | null>(null);
@@ -133,7 +137,7 @@ export default function TasksTab({ kids, tasks, onToggle, onPlace }: Props) {
       <div className="grid h-full gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
         {kids.map((kid) => {
           const style = kidColor(kid.color);
-          const kidTasks = sortedKidTasks(tasks, kid.name).filter((t) => t.dueToday);
+          const kidTasks = sortedKidTasks(tasks, kid.name).filter((t) => isVisibleToday(t, today));
           const open = kidTasks.filter((t) => !t.completed);
           const done = kidTasks.filter((t) => t.completed);
           const pct = kidTasks.length ? Math.round((done.length / kidTasks.length) * 100) : 0;
@@ -197,6 +201,20 @@ export default function TasksTab({ kids, tasks, onToggle, onPlace }: Props) {
                       </div>
                       {/* Sits beside the task, or wraps underneath when the column is too narrow. */}
                       <TaskPicture task={task} />
+                      {parentMode && (
+                        <span
+                          role="button"
+                          aria-label={`Edit ${task.title}`}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEdit(task);
+                          }}
+                          className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-indigo-600 shadow active:scale-90"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </span>
+                      )}
                       {holdingId === task.id && <span className="hold-bar absolute bottom-0 left-0 h-1.5 bg-indigo-500" style={{ animationDuration: `${HOLD_MS}ms` }} />}
                     </button>
                   );
@@ -245,6 +263,15 @@ export default function TasksTab({ kids, tasks, onToggle, onPlace }: Props) {
               className="flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-500 py-4 text-base font-bold text-white active:scale-95"
             >
               <ArrowUpToLine className="h-5 w-5" /> Move to top of the list
+            </button>
+            <button
+              onClick={() => {
+                onEdit(menuTask);
+                setMenuTask(null);
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-50 py-3.5 text-base font-bold text-indigo-600 active:scale-95"
+            >
+              <Pencil className="h-5 w-5" /> Edit task
             </button>
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Give to someone else</p>
