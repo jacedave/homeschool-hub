@@ -70,12 +70,12 @@ function NumberField({ label, value, onChange, placeholder, invalid, tone }: { l
 export type NewTask = Omit<TaskItem, "id" | "completed" | "dueToday" | "lastCompletedDate">;
 
 /** Add a task, or edit one when `task` is given. */
-export function TaskModal({ kids, pin, task, onSave, onDelete, onClose }: { kids: Kid[]; pin: string; task?: TaskItem; onSave: (t: NewTask, imageChanged: boolean, assignees: string[]) => void; onDelete?: () => void; onClose: () => void }) {
+export function TaskModal({ kids, pin, task, onSave, onDelete, onClose }: { kids: Kid[]; pin: string; task?: TaskItem; onSave: (t: NewTask, imageChanged: boolean, assigneeIds: string[]) => void; onDelete?: () => void; onClose: () => void }) {
   const [title, setTitle] = useState(task?.title ?? "");
   // When adding, one or more children can be picked and the task is copied to each.
-  const [selected, setSelected] = useState<string[]>(kids[0] ? [kids[0].name] : []);
+  const [selected, setSelected] = useState<string[]>(kids[0] ? [kids[0].id] : []);
   const [noKid, setNoKid] = useState(false);
-  const [assignee, setAssignee] = useState(task?.assignee ?? kids[0]?.name ?? "");
+  const [assignee, setAssignee] = useState(task?.assigneeId ?? kids[0]?.id ?? "");
   const [category, setCategory] = useState<TaskCategory>(task?.category ?? "school");
   const [points, setPoints] = useState(task ? String(task.points) : "");
   const [pointsMissing, setPointsMissing] = useState(false);
@@ -104,7 +104,8 @@ export function TaskModal({ kids, pin, task, onSave, onDelete, onClose }: { kids
           if (!stars || stars < 1) return setPointsMissing(true);
           onSave({
             title: title.trim(),
-            assignee: task ? assignee : selected[0],
+            assigneeId: task ? assignee : selected[0],
+            assignee: kids.find((k) => k.id === (task ? assignee : selected[0]))?.name ?? "",
             category,
             points: stars,
             repeat,
@@ -119,7 +120,7 @@ export function TaskModal({ kids, pin, task, onSave, onDelete, onClose }: { kids
           <div className="grid grid-cols-2 gap-2">
             <select value={assignee} onChange={(e) => setAssignee(e.target.value)} className={input}>
               {kids.map((k) => (
-                <option key={k.id} value={k.name}>{k.name}</option>
+                <option key={k.id} value={k.id}>{k.name}</option>
               ))}
             </select>
             <select value={category} onChange={(e) => setCategory(e.target.value as TaskCategory)} className={input}>
@@ -133,7 +134,7 @@ export function TaskModal({ kids, pin, task, onSave, onDelete, onClose }: { kids
               <p className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">Who is it for?</p>
               <div className="flex flex-wrap gap-2">
                 {kids.map((k) => {
-                  const on = selected.includes(k.name);
+                  const on = selected.includes(k.id);
                   const st = kidColor(k.color);
                   return (
                     <button
@@ -141,7 +142,7 @@ export function TaskModal({ kids, pin, task, onSave, onDelete, onClose }: { kids
                       key={k.id}
                       onClick={() => {
                         setNoKid(false);
-                        setSelected((cur) => (on ? cur.filter((n) => n !== k.name) : [...cur, k.name]));
+                        setSelected((cur) => (on ? cur.filter((id) => id !== k.id) : [...cur, k.id]));
                       }}
                       className={`flex items-center gap-2 rounded-full border-2 py-1.5 pl-1.5 pr-4 text-sm font-bold active:scale-95 ${on ? `${st.solid} border-transparent text-white` : `${st.border} ${st.bg} ${st.text}`}`}
                     >
@@ -155,7 +156,7 @@ export function TaskModal({ kids, pin, task, onSave, onDelete, onClose }: { kids
                     type="button"
                     onClick={() => {
                       setNoKid(false);
-                      setSelected(selected.length === kids.length ? [] : kids.map((k) => k.name));
+                      setSelected(selected.length === kids.length ? [] : kids.map((k) => k.id));
                     }}
                     className="rounded-full bg-sky-50 px-4 py-2.5 text-sm font-bold text-indigo-600 active:scale-95"
                   >

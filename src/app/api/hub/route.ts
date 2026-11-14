@@ -119,6 +119,27 @@ const sortKids = (rows: AirtableRecord[]) =>
 /** The base has this field spelled "Asignee"; accept either spelling. */
 const assigneeOf = (f: Record<string, unknown>) => String(f.Assignee ?? f.Asignee ?? "");
 
+/**
+ * Finds the kid a task belongs to. The "AssigneeId" column (the kid's record ID) is what counts. Rows that
+ * don't have it yet fall back to matching the older plain-text name, so nothing breaks while rows are filled in.
+ */
+function kidLookup(kids: Kid[]) {
+  const byId = new Map(kids.map((k) => [k.id, k]));
+  const byName = new Map<string, Kid>();
+  kids.forEach((k) => byName.has(k.name.trim().toLowerCase()) || byName.set(k.name.trim().toLowerCase(), k));
+  return {
+    byId,
+    idByName: (name: string) => byName.get(name.trim().toLowerCase())?.id,
+    resolve(fields: Record<string, unknown>): { id: string; name: string } {
+      const direct = byId.get(String(fields.AssigneeId || ""));
+      if (direct) return { id: direct.id, name: direct.name };
+      const raw = assigneeOf(fields);
+      const named = byName.get(raw.trim().toLowerCase());
+      return named ? { id: named.id, name: named.name } : { id: "", name: raw };
+    },
+  };
+}
+
 /** Optional table: returns [] if it doesn't exist yet. */
 async function fetchOptional(table: string): Promise<AirtableRecord[]> {
   try {
@@ -147,9 +168,8 @@ const toReward = (r: AirtableRecord): RewardItem => ({
 });
 
 /** Unclaimed ledger rows. The Contributions table is optional until pooling is set up. */
-async function fetchContributions(): Promise<Contribution[]> {
-  const rows = await fetchOptional("Contributions");
-  return rows
+const unclaimedContributions = (rows: AirtableRecord[]): Contribution[] =>
+  rows
     .filter((r) => !r.fields.Claimed)
     .map((r) => ({
       id: r.id,
@@ -157,6 +177,95 @@ async function fetchContributions(): Promise<Contribution[]> {
       kidId: String(r.fields.Kid || ""),
       amount: Number(r.fields.Amount || 0),
     }));
+
+async function fetchContributions(): Promise<Contribution[]> {
+  return unclaimedContributions(await fetchOptional("Contributions"));
+}
+
+/** Columns found to be missing from the base, so the name sync stops trying to write them. */
+const missingColumns = new Set<string>();
+
+/** Batch-updates rows, dropping any optional column the table turns out not to have instead of failing. */
+async function patchManyTolerant(table: string, records: { id: string; fields: Record<string, unknown> }[], optional: string[]) {
+  let recs = records;
+  for (let attempt = 0; attempt <= optional.length && recs.length; attempt++) {
+    try {
+      await patchMany(table, recs);
+      return;
+    } catch (e) {
+      const missing = e instanceof Error ? /Unknown field name: "?([^"]+)"?/i.exec(e.message)?.[1] : undefined;
+      if (!missing || !optional.includes(missing)) throw e;
+      missingColumns.add(`${table}.${missing}`);
+      recs = recs
+        .map((r) => {
+          const fields = { ...r.fields };
+          delete fields[missing];
+          return { id: r.id, fields };
+        })
+        .filter((r) => Object.keys(r.fields).length);
+    }
+  }
+}
+
+/**
+ * Keeps the readable name columns in step with the IDs: fills in rows that don't have an ID or name yet and
+ * corrects names after a kid or reward is renamed. A little at a time, and never allowed to fail a page load.
+ */
+async function syncNames(
+  tasks: AirtableRecord[],
+  contribRows: AirtableRecord[],
+  redemptionRows: AirtableRecord[],
+  lookup: ReturnType<typeof kidLookup>,
+  rewardTitles: Map<string, string>
+) {
+  try {
+    const taskPatches: { id: string; fields: Record<string, unknown> }[] = [];
+    for (const r of tasks) {
+      const who = lookup.resolve(r.fields);
+      if (!who.id) continue;
+      const fields: Record<string, unknown> = {};
+      if (!missingColumns.has("Tasks.AssigneeId") && String(r.fields.AssigneeId || "") !== who.id) fields.AssigneeId = who.id;
+      if (!missingColumns.has("Tasks.Assignee") && assigneeOf(r.fields) !== who.name) fields.Assignee = who.name;
+      if (Object.keys(fields).length) taskPatches.push({ id: r.id, fields });
+    }
+    if (taskPatches.length) await patchManyTolerant("Tasks", taskPatches.slice(0, 40), ["AssigneeId", "Assignee"]);
+
+    const contribPatches: { id: string; fields: Record<string, unknown> }[] = [];
+    for (const r of contribRows) {
+      const rewardName = rewardTitles.get(String(r.fields.Reward || ""));
+      const kidName = lookup.byId.get(String(r.fields.Kid || ""))?.name;
+      const fields: Record<string, unknown> = {};
+      if (rewardName && !missingColumns.has("Contributions.RewardName") && r.fields.RewardName !== rewardName) fields.RewardName = rewardName;
+      if (kidName && !missingColumns.has("Contributions.KidName") && r.fields.KidName !== kidName) fields.KidName = kidName;
+      if (Object.keys(fields).length) contribPatches.push({ id: r.id, fields });
+    }
+    if (contribPatches.length) await patchManyTolerant("Contributions", contribPatches.slice(0, 40), ["RewardName", "KidName"]);
+
+    // Earlier redemptions only have names. Fill in their IDs where the names clearly match. The names stay as
+    // they were when the reward was earned, since this table is the history of what happened.
+    const rewardIdByTitle = new Map<string, string | null>();
+    rewardTitles.forEach((title, id) => {
+      const key = title.trim().toLowerCase();
+      rewardIdByTitle.set(key, rewardIdByTitle.has(key) ? null : id); // two rewards with one name: don't guess
+    });
+    const redemptionPatches: { id: string; fields: Record<string, unknown> }[] = [];
+    for (const r of redemptionRows) {
+      const fields: Record<string, unknown> = {};
+      if (!r.fields.RewardId && !missingColumns.has("Redemptions.RewardId")) {
+        const id = rewardIdByTitle.get(String(r.fields.Reward || "").trim().toLowerCase());
+        if (id) fields.RewardId = id;
+      }
+      if (!r.fields.KidIds && !missingColumns.has("Redemptions.KidIds")) {
+        const names = String(r.fields.Kids || "").split(",").map((n) => n.trim()).filter(Boolean);
+        const ids = names.map((n) => lookup.idByName(n));
+        if (names.length && ids.every(Boolean)) fields.KidIds = ids.join(",");
+      }
+      if (Object.keys(fields).length) redemptionPatches.push({ id: r.id, fields });
+    }
+    if (redemptionPatches.length) await patchManyTolerant("Redemptions", redemptionPatches.slice(0, 40), ["RewardId", "KidIds"]);
+  } catch (e) {
+    console.error("Name sync skipped:", e instanceof Error ? e.message : e);
+  }
 }
 
 export async function GET(req: NextRequest) {
@@ -164,15 +273,18 @@ export async function GET(req: NextRequest) {
   if (blocked) return blocked;
 
   try {
-    const [kids, tasks, rewards, meals, shopping, contributions, redemptionRows] = await Promise.all([
+    const [kids, tasks, rewards, meals, shopping, contribRows, redemptionRows] = await Promise.all([
       fetchTable("Kids"),
       fetchTable("Tasks"),
       fetchTable("Rewards"),
       fetchTable("Meals"),
       fetchTable("Shopping"),
-      fetchContributions(),
+      fetchOptional("Contributions"),
       fetchOptional("Redemptions"),
     ]);
+    const kidObjs = sortKids(kids).map((r, i) => ({ ...toKid(r), color: pickColor(r.fields.Color, i) }));
+    const lookup = kidLookup(kidObjs);
+    const rewardTitles = new Map(rewards.map((r) => [r.id, String(r.fields.Title || "")]));
 
     const { date: today, dayIndex } = todayIn(TIME_ZONE);
 
@@ -199,18 +311,22 @@ export async function GET(req: NextRequest) {
       toReset.forEach((r) => (r.fields.Completed = false));
     }
 
+    await syncNames(tasks, contribRows, redemptionRows, lookup, rewardTitles);
+
     return NextResponse.json({
       mode: "live",
       today,
       timeZone: TIME_ZONE,
-      kids: sortKids(kids).map((r, i) => ({ ...toKid(r), color: pickColor(r.fields.Color, i) })),
+      kids: kidObjs,
       tasks: tasks.map((r) => {
         const repeat = parseRepeat(r.fields.Repeat);
         const repeatDays = parseRepeatDays(r.fields.RepeatDays);
+        const who = lookup.resolve(r.fields);
         return {
           id: r.id,
           title: String(r.fields.Title || ""),
-          assignee: assigneeOf(r.fields),
+          assigneeId: who.id,
+          assignee: who.name,
           category: String(r.fields.Category || "").toLowerCase() === "chore" ? "chore" : "school",
           points: Number(r.fields.Points || 1),
           completed: Boolean(r.fields.Completed),
@@ -224,7 +340,7 @@ export async function GET(req: NextRequest) {
         };
       }),
       rewards: rewards.map(toReward),
-      contributions,
+      contributions: unclaimedContributions(contribRows),
       redemptions: redemptionRows
         .map((r) => ({
           id: r.id,
@@ -308,20 +424,41 @@ async function saveMeals(items: MealPayload[]) {
 interface TaskMovePayload {
   id: string;
   priority: number;
-  assignee?: string;
+  /** Set when the task is being given to a different kid. */
+  assigneeId?: string;
 }
 
 /** Reorders and/or reassigns several tasks in one go. */
 async function reorderTasks(items: TaskMovePayload[]) {
   if (!Array.isArray(items) || items.length > 200) return { error: "Too many tasks at once." };
   if (items.some((i) => typeof i.id !== "string" || !Number.isFinite(i.priority))) return { error: "Bad task data." };
-  const records = items.map((i) => ({ id: i.id, fields: { Priority: i.priority, ...(i.assignee ? { Assignee: i.assignee } : {}) } }));
+
+  // A task given to another kid saves both the kid's ID and their name.
+  const moved = items.some((i) => i.assigneeId);
+  const lookup = moved ? kidLookup((await fetchTable("Kids")).map(toKid)) : null;
+  const records = items.map((i) => {
+    const fields: Record<string, unknown> = { Priority: i.priority };
+    const kid = i.assigneeId ? lookup?.byId.get(i.assigneeId) : undefined;
+    if (kid) {
+      fields.AssigneeId = kid.id;
+      fields.Assignee = kid.name;
+    }
+    return { id: i.id, fields };
+  });
+  if (moved && records.some((r) => "Assignee" in r.fields) === false) return { error: "That kid no longer exists." };
   try {
-    await patchMany("Tasks", records);
+    await patchManyTolerant("Tasks", records, ["AssigneeId"]);
   } catch (e) {
     // Older bases spelled the field "Asignee".
-    if (e instanceof Error && /unknown field/i.test(e.message) && items.some((i) => i.assignee)) {
-      await patchMany("Tasks", items.map((i) => ({ id: i.id, fields: { Priority: i.priority, ...(i.assignee ? { Asignee: i.assignee } : {}) } })));
+    if (e instanceof Error && /unknown field/i.test(e.message) && moved) {
+      await patchManyTolerant(
+        "Tasks",
+        records.map((r) => {
+          const { Assignee, ...rest } = r.fields;
+          return { id: r.id, fields: Assignee ? { ...rest, Asignee: Assignee } : rest };
+        }),
+        ["AssigneeId"]
+      );
     } else {
       throw e;
     }
@@ -367,17 +504,69 @@ function cleanFields(table: string, input: Record<string, unknown>): Record<stri
 
 const fail = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
+/** Creates a row, dropping any of the `optional` fields the table doesn't have (yet) instead of failing. */
+async function createWithoutMissing(table: string, fields: Record<string, unknown>, optional: string[]) {
+  const f = { ...fields };
+  for (let attempt = 0; attempt <= optional.length; attempt++) {
+    try {
+      return await createRecord(table, f);
+    } catch (e) {
+      const missing = e instanceof Error ? /Unknown field name: "?([^"]+)"?/i.exec(e.message)?.[1] : undefined;
+      if (!missing || !optional.includes(missing) || !(missing in f)) throw e;
+      delete f[missing];
+    }
+  }
+  return createRecord(table, f);
+}
+
+/** Fields that are nice to have; if the base doesn't have them yet, saving a task still works without them. */
+const OPTIONAL_TASK_FIELDS = new Set(["TimesCompleted", "PrevCompletedDate"]);
+
+async function patchTaskTolerant(id: string, fields: Record<string, unknown>) {
+  const f = { ...fields };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await patchRecord("Tasks", id, f);
+    } catch (e) {
+      const missing = e instanceof Error ? /Unknown field name: "?([^"]+)"?/i.exec(e.message)?.[1] : undefined;
+      if (!missing || !OPTIONAL_TASK_FIELDS.has(missing) || !(missing in f)) throw e;
+      delete f[missing];
+    }
+  }
+}
+
+const dateOnly = (v: unknown) => (v ? String(v).slice(0, 10) : "");
+
 async function completeTask(taskId: string, completed: boolean) {
   const [task, kidRows] = await Promise.all([getRecord("Tasks", taskId), fetchTable("Kids")]);
   if (Boolean(task.fields.Completed) === completed) return { ok: true, unchanged: true };
 
   const points = Number(task.fields.Points || 1);
-  const assignee = assigneeOf(task.fields);
-  const kid = kidRows.map(toKid).find((k) => k.name === assignee);
+  const lookup = kidLookup(kidRows.map(toKid));
+  const kid = lookup.byId.get(lookup.resolve(task.fields).id);
 
   const { date } = todayIn(TIME_ZONE);
+  const lastDate = dateOnly(task.fields.LastCompletedDate);
+  const prevDate = dateOnly(task.fields.PrevCompletedDate);
+
+  // The running total goes up when a task is completed and comes back down if it's undone, so it always
+  // equals the number of completions that stuck.
+  const fields: Record<string, unknown> = {
+    Completed: completed,
+    TimesCompleted: Math.max(0, Number(task.fields.TimesCompleted || 0) + (completed ? 1 : -1)),
+  };
+  if (completed) {
+    fields.LastCompletedDate = date;
+    // Remember the earlier completion so undoing this one can put it back.
+    if (lastDate && lastDate !== date) fields.PrevCompletedDate = lastDate;
+  } else if (prevDate) {
+    fields.LastCompletedDate = prevDate; // back to the last time it was really finished
+  } else if (lastDate === date) {
+    fields.LastCompletedDate = null; // it had never been finished before today's undone completion
+  }
+
   await Promise.all([
-    patchRecord("Tasks", taskId, { Completed: completed, LastCompletedDate: completed ? date : null }),
+    patchTaskTolerant(taskId, fields),
     kid ? patchRecord("Kids", kid.id, { Stars: kid.stars + (completed ? points : -points) }) : Promise.resolve(),
   ]);
   return { ok: true };
@@ -396,7 +585,9 @@ async function deposit(rewardId: string, kidId: string, amount: number) {
 
   const [, created] = await Promise.all([
     patchRecord("Kids", kid.id, { Stars: kid.stars - amount }),
-    createRecord("Contributions", { Reward: rewardId, Kid: kidId, Amount: amount, Claimed: false }),
+    // Reward and Kid hold the internal IDs the app matches on. RewardName and KidName are readable
+    // copies for people looking at the table; they're skipped if those columns don't exist yet.
+    createWithoutMissing("Contributions", { Reward: rewardId, Kid: kidId, Amount: amount, Claimed: false, RewardName: reward.title, KidName: kid.name }, ["RewardName", "KidName"]),
   ]);
 
   // Shared rewards claim when the common jar is full; solo rewards claim per kid.
@@ -413,14 +604,22 @@ async function deposit(rewardId: string, kidId: string, amount: number) {
     try {
       const kidList = (await fetchTable("Kids")).map(toKid);
       const nameOf = (id: string) => kidList.find((k) => k.id === id)?.name || "?";
-      const rec = await createRecord("Redemptions", {
-        Reward: reward.title,
-        Kids: Array.from(byKid.keys()).map(nameOf).join(", "),
-        Details: Array.from(byKid, ([id, amt]) => `${nameOf(id)} ${amt}★`).join(", "),
-        Cost: reward.cost,
-        Date: todayIn(TIME_ZONE).date,
-        Fulfilled: false,
-      });
+      // Reward, Kids and Details are the readable record of what was earned. RewardId and KidIds are the
+      // matching IDs (same order as Kids); they're skipped if those columns aren't in the table yet.
+      const rec = await createWithoutMissing(
+        "Redemptions",
+        {
+          Reward: reward.title,
+          Kids: Array.from(byKid.keys()).map(nameOf).join(", "),
+          Details: Array.from(byKid, ([id, amt]) => `${nameOf(id)} ${amt}★`).join(", "),
+          Cost: reward.cost,
+          Date: todayIn(TIME_ZONE).date,
+          Fulfilled: false,
+          RewardId: reward.id,
+          KidIds: Array.from(byKid.keys()).join(","),
+        },
+        ["RewardId", "KidIds"]
+      );
       return rec.id;
     } catch (e) {
       console.error("Could not log redemption (is there a Redemptions table?):", e);
@@ -482,16 +681,25 @@ export async function POST(req: NextRequest) {
           const write = (f: Record<string, unknown>) =>
             body.action === "create" ? createRecord(body.table as string, f) : patchRecord(body.table as string, body.recordId as string, f);
           if (body.action === "update" && !body.recordId) return fail("recordId required");
-          try {
-            return NextResponse.json(await write(fields));
-          } catch (e) {
-            // Older bases spelled the field "Asignee".
-            if (body.table === "Tasks" && "Assignee" in fields && e instanceof Error && /unknown field/i.test(e.message)) {
-              const { Assignee, ...rest } = fields;
-              return NextResponse.json(await write({ ...rest, Asignee: Assignee }));
+          // If the base is missing a column, retry without it (or under its older spelling) instead of failing.
+          let f = fields;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              return NextResponse.json(await write(f));
+            } catch (e) {
+              const missing = e instanceof Error ? /Unknown field name: "?([^"]+)"?/i.exec(e.message)?.[1] : undefined;
+              if (body.table === "Tasks" && missing === "AssigneeId" && "AssigneeId" in f) {
+                f = { ...f };
+                delete f.AssigneeId;
+              } else if (body.table === "Tasks" && missing === "Assignee" && "Assignee" in f) {
+                const { Assignee, ...rest } = f;
+                f = { ...rest, Asignee: Assignee };
+              } else {
+                throw e;
+              }
             }
-            throw e;
           }
+          return fail("Couldn't save that.");
         }
         if (!body.recordId) return fail("recordId required");
         return NextResponse.json(await deleteRecord(body.table, body.recordId));

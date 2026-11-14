@@ -7,6 +7,8 @@ export const DEMO_KIDS: Kid[] = [
   { id: "k4", name: "Taylor", stars: 7, color: "purple" },
 ];
 
+const KID_IDS: Record<string, string> = { Alex: "k1", Sam: "k2", Jordan: "k3", Taylor: "k4" };
+
 const t = (
   id: string,
   title: string,
@@ -17,6 +19,7 @@ const t = (
 ): TaskItem => ({
   id,
   title,
+  assigneeId: KID_IDS[assignee],
   assignee,
   category,
   points,

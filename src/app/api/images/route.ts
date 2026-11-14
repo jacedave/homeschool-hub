@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authorizePin, lockedMessage } from "@/lib/auth";
+import { fetchJsonCached } from "@/lib/cachedFetch";
 
 const PIXABAY_KEY = process.env.PIXABAY_API_KEY;
 
@@ -35,13 +36,8 @@ export async function GET(req: NextRequest) {
 
   try {
     // Pixabay allows caching results for 24 hours.
-    const res = await fetch(url, { next: { revalidate: 86400 }, signal: AbortSignal.timeout(8000) });
-    if (res.status === 429) return NextResponse.json({ error: "Picture search is busy. Try again in a minute." }, { status: 429 });
-    if (!res.ok) {
-      console.error("Pixabay error", res.status);
-      return NextResponse.json({ error: "Picture search is unavailable right now." }, { status: 502 });
-    }
-    const data = (await res.json()) as { hits?: PixabayHit[] };
+    const data = await fetchJsonCached<{ hits?: PixabayHit[] }>(url, { ttlMs: 24 * 60 * 60 * 1000, timeoutMs: 8000 });
+
     const results = (data.hits || [])
       .filter((h) => h.webformatURL && h.largeImageURL)
       .map((h) => ({
@@ -53,7 +49,7 @@ export async function GET(req: NextRequest) {
       }));
     return NextResponse.json({ results });
   } catch (e) {
-    console.error("Pixabay request failed:", e instanceof Error ? e.message : e);
+    if ((e as { status?: number }).status === 429) return NextResponse.json({ error: "Picture search is busy. Try again in a minute." }, { status: 429 });
     return NextResponse.json({ error: "Picture search is unavailable right now." }, { status: 502 });
   }
 }

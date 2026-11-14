@@ -4,6 +4,7 @@ import { FAMILY_TZ } from "@/lib/config";
 import { authorizePin, lockedMessage } from "@/lib/auth";
 import { expandEvents, ExpandedEvent } from "@/lib/icalExpand";
 import { zonedStartOfDay } from "@/lib/rules";
+import { fetchJsonCached } from "@/lib/cachedFetch";
 
 /** Google Photos escapes characters inside the page's JSON, e.g. \\u003d for "=". */
 const unescapeUrl = (s: string) => s.replace(/\\u003d/g, "=").replace(/\\u0026/g, "&").replace(/\\\//g, "/");
@@ -18,13 +19,14 @@ export async function GET(req: NextRequest) {
   let weather: unknown = null;
 
   try {
-    const wRes = await fetch(
+    // Weather is refreshed every 30 minutes. If the service is slow or down, the page still loads
+    // (with the last forecast, or none) rather than waiting on it.
+    weather = await fetchJsonCached(
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,weathercode&temperature_unit=fahrenheit&timezone=${encodeURIComponent(FAMILY_TZ)}`,
-      { next: { revalidate: 1800 } }
+      { ttlMs: 30 * 60 * 1000, timeoutMs: 4000 }
     );
-    if (wRes.ok) weather = await wRes.json();
-  } catch (e) {
-    console.error("Weather error:", e);
+  } catch {
+    // already logged; carry on without weather
   }
 
   if (!isAuth) {
@@ -66,7 +68,7 @@ export async function GET(req: NextRequest) {
   const albumUrl = process.env.GOOGLE_PHOTOS_ALBUM_URL;
   if (albumUrl) {
     try {
-      const pRes = await fetch(albumUrl, { redirect: "follow", cache: "no-store" });
+      const pRes = await fetch(albumUrl, { redirect: "follow", cache: "no-store", signal: AbortSignal.timeout(8000) });
       const html = await pRes.text();
       const regex = /"(https:\/\/lh3\.googleusercontent\.com\/pw\/[^"]+)"/g;
       const matches = new Set<string>();

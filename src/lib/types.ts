@@ -16,6 +16,9 @@ export interface Kid {
 export interface TaskItem {
   id: string;
   title: string;
+  /** The kid this task belongs to, by the kid's ID. Everything matches on this. */
+  assigneeId: string;
+  /** The kid's name, for display. It follows the kid if they are renamed. */
   assignee: string;
   category: TaskCategory;
   points: number;

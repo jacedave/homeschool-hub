@@ -106,34 +106,35 @@ export function inSleepWindow(sleepAt: string, wakeAt: string, now = new Date())
 const taskKey = (t: TaskItem, index: number) => t.priority ?? index - 1_000_000;
 
 /** All of one kid's tasks in priority order (including ones not due today). */
-export function sortedKidTasks(tasks: TaskItem[], kidName: string): TaskItem[] {
+export function sortedKidTasks(tasks: TaskItem[], kidId: string): TaskItem[] {
   return tasks
     .map((t, i) => ({ t, k: taskKey(t, i) }))
-    .filter((x) => x.t.assignee === kidName)
+    .filter((x) => x.t.assigneeId === kidId)
     .sort((a, b) => a.k - b.k)
     .map((x) => x.t);
 }
 
 /** Priority for a brand-new task so that it lands at the bottom of the kid's list. */
-export function nextPriority(tasks: TaskItem[], kidName: string): number {
-  return Math.max(0, ...tasks.filter((t) => t.assignee === kidName && t.priority !== undefined).map((t) => t.priority as number)) + 1;
+export function nextPriority(tasks: TaskItem[], kidId: string): number {
+  return Math.max(0, ...tasks.filter((t) => t.assigneeId === kidId && t.priority !== undefined).map((t) => t.priority as number)) + 1;
 }
 
 export type TaskPlacement = { before: string } | "top" | "end";
 export interface TaskMove {
   id: string;
   priority: number;
-  assignee?: string;
+  /** Set when the task moves to a different kid. */
+  assigneeId?: string;
 }
 
 /**
  * Works out the changes needed to put a task in a spot in a kid's list. The whole target list is
  * renumbered 1..n so the order is explicit and stays stable.
  */
-export function planTaskMove(tasks: TaskItem[], taskId: string, toKid: string, where: TaskPlacement): TaskMove[] {
+export function planTaskMove(tasks: TaskItem[], taskId: string, toKidId: string, where: TaskPlacement): TaskMove[] {
   const moving = tasks.find((t) => t.id === taskId);
   if (!moving) return [];
-  const list = sortedKidTasks(tasks, toKid).filter((t) => t.id !== taskId);
+  const list = sortedKidTasks(tasks, toKidId).filter((t) => t.id !== taskId);
   let at = list.length;
   if (where === "top") at = 0;
   else if (where !== "end") {
@@ -143,8 +144,8 @@ export function planTaskMove(tasks: TaskItem[], taskId: string, toKid: string, w
   const ordered = [...list.slice(0, at), moving, ...list.slice(at)];
   const moves: TaskMove[] = [];
   ordered.forEach((t, i) => {
-    const assignee = t.id === taskId && t.assignee !== toKid ? toKid : undefined;
-    if (t.priority !== i + 1 || assignee) moves.push({ id: t.id, priority: i + 1, ...(assignee ? { assignee } : {}) });
+    const assigneeId = t.id === taskId && t.assigneeId !== toKidId ? toKidId : undefined;
+    if (t.priority !== i + 1 || assigneeId) moves.push({ id: t.id, priority: i + 1, ...(assigneeId ? { assigneeId } : {}) });
   });
   return moves;
 }

@@ -14,7 +14,8 @@ interface Props {
   kids: Kid[];
   tasks: TaskItem[];
   onToggle: (task: TaskItem) => void;
-  onPlace: (task: TaskItem, toKid: string, where: TaskPlacement) => void;
+  /** `toKidId` is the ID of the kid who should end up with the task. */
+  onPlace: (task: TaskItem, toKidId: string, where: TaskPlacement) => void;
   today: string;
   /** True while a parent has unlocked the app: shows the edit buttons. */
   parentMode: boolean;
@@ -93,7 +94,7 @@ export default function TasksTab({ kids, tasks, onToggle, onPlace, today, parent
       if (!d || !commit) return;
       if (!d.moved) return setMenuTask(d.task); // held but not dragged: show the move menu
       const t = targetAt(d.x, d.y, d.task.id);
-      if (t.top) onPlace(d.task, d.task.assignee, "top");
+      if (t.top) onPlace(d.task, d.task.assigneeId, "top");
       else if (t.kid) onPlace(d.task, t.kid, t.before ? { before: t.before } : "end");
     };
     const timer = window.setTimeout(() => {
@@ -137,16 +138,16 @@ export default function TasksTab({ kids, tasks, onToggle, onPlace, today, parent
       <div className="grid h-full gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
         {kids.map((kid) => {
           const style = kidColor(kid.color);
-          const kidTasks = sortedKidTasks(tasks, kid.name).filter((t) => isVisibleToday(t, today));
+          const kidTasks = sortedKidTasks(tasks, kid.id).filter((t) => isVisibleToday(t, today));
           const open = kidTasks.filter((t) => !t.completed);
           const done = kidTasks.filter((t) => t.completed);
           const pct = kidTasks.length ? Math.round((done.length / kidTasks.length) * 100) : 0;
-          const colHover = drag && hover.kid === kid.name;
+          const colHover = drag && hover.kid === kid.id;
 
           return (
             <section
               key={kid.id}
-              data-kid-col={kid.name}
+              data-kid-col={kid.id}
               className={`flex min-h-0 flex-col rounded-3xl border bg-white p-4 shadow-sm transition ${colHover ? "border-indigo-400 ring-4 ring-indigo-200" : style.border}`}
             >
               <header className="mb-3 flex flex-wrap items-center justify-between gap-x-2 gap-y-2">
@@ -257,7 +258,7 @@ export default function TasksTab({ kids, tasks, onToggle, onPlace, today, parent
             </div>
             <button
               onClick={() => {
-                onPlace(menuTask, menuTask.assignee, "top");
+                onPlace(menuTask, menuTask.assigneeId, "top");
                 setMenuTask(null);
               }}
               className="flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-500 py-4 text-base font-bold text-white active:scale-95"
@@ -277,12 +278,12 @@ export default function TasksTab({ kids, tasks, onToggle, onPlace, today, parent
               <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Give to someone else</p>
               <div className="grid grid-cols-2 gap-2.5">
                 {kids
-                  .filter((k) => k.name !== menuTask.assignee)
+                  .filter((k) => k.id !== menuTask.assigneeId)
                   .map((k) => (
                     <button
                       key={k.id}
                       onClick={() => {
-                        onPlace(menuTask, k.name, "end");
+                        onPlace(menuTask, k.id, "end");
                         setMenuTask(null);
                       }}
                       className={`flex items-center gap-3 rounded-2xl border-2 ${kidColor(k.color).border} ${kidColor(k.color).bg} px-3 py-3 text-left active:scale-95`}

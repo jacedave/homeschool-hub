@@ -370,7 +370,7 @@ export default function FamilyWallPlanner() {
     const prevDate = task.lastCompletedDate;
 
     setTasks((p) => p.map((t) => (t.id === task.id ? { ...t, completed, lastCompletedDate: completed ? date : undefined } : t)));
-    setKids((p) => p.map((k) => (k.name === task.assignee ? { ...k, stars: k.stars + delta } : k)));
+    setKids((p) => p.map((k) => (k.id === task.assigneeId ? { ...k, stars: k.stars + delta } : k)));
 
     if (completed) {
       celebrate({ name: task.assignee, headline: "Awesome job!", title: task.title, points: task.points, icon: task.icon || "⭐", imageUrl: task.imageUrl });
@@ -381,40 +381,48 @@ export default function FamilyWallPlanner() {
       error: "Couldn't save that change.",
       revert: () => {
         setTasks((p) => p.map((t) => (t.id === task.id ? { ...t, completed: !completed, lastCompletedDate: prevDate } : t)));
-        setKids((p) => p.map((k) => (k.name === task.assignee ? { ...k, stars: k.stars - delta } : k)));
+        setKids((p) => p.map((k) => (k.id === task.assigneeId ? { ...k, stars: k.stars - delta } : k)));
         if (completed) setCelebration(null);
       },
     });
   };
 
   /** Moves a task within a kid's list or to another kid. Press-and-hold a task to use it. */
-  const placeTask = (task: TaskItem, toKid: string, where: TaskPlacement) => {
-    const moves = planTaskMove(tasks, task.id, toKid, where);
+  const placeTask = (task: TaskItem, toKidId: string, where: TaskPlacement) => {
+    const moves = planTaskMove(tasks, task.id, toKidId, where);
     if (!moves.length) return;
     const byId = new Map(moves.map((m) => [m.id, m]));
-    const before = new Map(tasks.filter((t) => byId.has(t.id)).map((t) => [t.id, { priority: t.priority, assignee: t.assignee }]));
+    const before = new Map(tasks.filter((t) => byId.has(t.id)).map((t) => [t.id, { priority: t.priority, assigneeId: t.assigneeId, assignee: t.assignee }]));
+    const toKidName = kids.find((k) => k.id === toKidId)?.name ?? "";
 
-    setTasks((p) => p.map((t) => (byId.has(t.id) ? { ...t, priority: byId.get(t.id)!.priority, assignee: byId.get(t.id)!.assignee ?? t.assignee } : t)));
-    if (toKid !== task.assignee) showNotice(`${task.title} moved to ${toKid}.`);
+    setTasks((p) =>
+      p.map((t) => {
+        const m = byId.get(t.id);
+        if (!m) return t;
+        return { ...t, priority: m.priority, ...(m.assigneeId ? { assigneeId: m.assigneeId, assignee: toKidName } : {}) };
+      })
+    );
+    if (toKidId !== task.assigneeId) showNotice(`${task.title} moved to ${toKidName}.`);
     if (!isLiveMode) return;
 
-    save(() => hubPost({ action: "reorderTasks", items: moves.map((m) => ({ ...m, id: resolveId(m.id) })) }), {
+    save(() => hubPost({ action: "reorderTasks", items: moves.map((m) => ({ ...m, id: resolveId(m.id), ...(m.assigneeId ? { assigneeId: resolveId(m.assigneeId) } : {}) })) }), {
       error: "Couldn't move that task.",
       revert: () => setTasks((p) => p.map((t) => (before.has(t.id) ? { ...t, ...before.get(t.id)! } : t))),
     });
   };
 
   /** Adds the task for each chosen child (one copy per child). */
-  const handleAddTask = (t: NewTask, assignees: string[]) => {
+  const handleAddTask = (t: NewTask, assigneeIds: string[]) => {
     setShowAddTask(false);
-    assignees.forEach((who, i) => addTaskFor({ ...t, assignee: who }, i));
-    if (assignees.length > 1) showNotice(`Added "${t.title}" for ${assignees.join(", ")}.`);
+    const named = assigneeIds.map((id) => ({ id, name: kids.find((k) => k.id === id)?.name ?? "" }));
+    named.forEach((who, i) => addTaskFor({ ...t, assigneeId: who.id, assignee: who.name }, i));
+    if (named.length > 1) showNotice(`Added "${t.title}" for ${named.map((n) => n.name).join(", ")}.`);
   };
 
   const addTaskFor = (t: NewTask, copyIndex: number) => {
     const tempId = (isLiveMode ? "tmp-" : "demo-") + Date.now() + "-" + copyIndex;
     // New tasks go to the bottom of that kid's list, both now and after the next sync.
-    const priority = nextPriority(tasks, t.assignee);
+    const priority = nextPriority(tasks, t.assigneeId);
     setTasks((p) => [...p, { ...t, id: tempId, completed: false, dueToday: true, priority }]);
     if (!isLiveMode) return;
 
@@ -425,6 +433,7 @@ export default function FamilyWallPlanner() {
           table: "Tasks",
           fields: {
             Title: t.title,
+            AssigneeId: resolveId(t.assigneeId),
             Assignee: t.assignee,
             Category: t.category,
             Points: t.points,
@@ -446,9 +455,9 @@ export default function FamilyWallPlanner() {
 
   const handleEditTask = (task: TaskItem, t: NewTask, imageChanged: boolean) => {
     setEditTask(null);
-    const assigneeChanged = t.assignee !== task.assignee;
+    const assigneeChanged = t.assigneeId !== task.assigneeId;
     // Giving a task to someone else puts it at the bottom of their list.
-    const priority = assigneeChanged ? nextPriority(tasks, t.assignee) : task.priority;
+    const priority = assigneeChanged ? nextPriority(tasks, t.assigneeId) : task.priority;
     setTasks((p) => p.map((x) => (x.id === task.id ? { ...x, ...t, priority } : x)));
     if (!isLiveMode) return;
 
@@ -460,6 +469,7 @@ export default function FamilyWallPlanner() {
           recordId: resolveId(task.id),
           fields: {
             Title: t.title,
+            AssigneeId: resolveId(t.assigneeId),
             Assignee: t.assignee,
             Category: t.category,
             Points: t.points,
